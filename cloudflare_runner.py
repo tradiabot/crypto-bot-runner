@@ -89,6 +89,25 @@ def read_log_events(since: float, limit: int = 120):
     return events[-limit:]
 
 
+def seed_local_feedback(limit: int = 300):
+    try:
+        data = request_json("GET", f"/api/v1/logs?limit={limit}")
+    except SystemExit:
+        raise
+    except Exception:
+        return
+    rows = data.get("logs", []) if isinstance(data, dict) else []
+    if not isinstance(rows, list):
+        return
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with LOG_PATH.open("w", encoding="utf-8") as handle:
+        for row in reversed(rows):
+            if not isinstance(row, dict) or not row.get("event"):
+                continue
+            item = {"ts": row.get("ts"), "event": row.get("event"), "data": row.get("data", {})}
+            handle.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+
 def apply_runtime_env(next_job):
     config = next_job.get("config") if isinstance(next_job, dict) else {}
     if not isinstance(config, dict):
@@ -97,12 +116,13 @@ def apply_runtime_env(next_job):
         {
             "AUTO_EXECUTE": "YES",
             "AUTO_LIVE": "YES",
-            "CONFIRM_LIVE": "NO",
-            "SUPERVISOR_EXECUTE": "YES",
+            "CONFIRM_LIVE": "YES",
+            "SUPERVISOR_EXECUTE": "NO",
             "AI_PROVIDER": "groq",
             "AI_FALLBACK_PROVIDERS": "technical",
             "GROQ_MODEL": str(next_job.get("ai", {}).get("model") or os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b"),
             "REQUIRE_AI_FOR_EXECUTION": "YES",
+            "UNIVERSE_AUTOPILOT_APPLY": "YES",
         }
     )
     for key, value in config.items():
@@ -125,6 +145,27 @@ def run_cycle(timeout: int):
     return proc.returncode, proc.stdout[-8000:], time.time() - started
 
 
+def run_supervisor(timeout: int, cycle: int | None):
+    every = int(os.getenv("SUPERVISOR_EVERY_CYCLES", "1"))
+    if every <= 0 or (cycle and cycle % every != 0):
+        return {"skipped": True, "reason": "interval"}
+    started = time.time()
+    try:
+        proc = subprocess.run(
+            [sys.executable, "crypto_supervisor.py", "--once"],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout,
+            check=False,
+        )
+        return {"skipped": False, "returncode": proc.returncode, "duration_seconds": round(time.time() - started, 2), "stdout_tail": proc.stdout[-2000:]}
+    except subprocess.TimeoutExpired as exc:
+        output = (exc.stdout or "")[-2000:] if isinstance(exc.stdout, str) else ""
+        return {"skipped": False, "returncode": 124, "duration_seconds": timeout, "stdout_tail": output}
+
+
 def main():
     parser = argparse.ArgumentParser(description="Cloudflare-controlled crypto-bot runner")
     parser.add_argument("--timeout", type=int, default=int(os.getenv("RUNNER_CYCLE_TIMEOUT_SECONDS", "420")))
@@ -142,6 +183,7 @@ def main():
     if not (os.getenv("CDC_API_SECRET") or os.getenv("CRYPTO_COM_API_SECRET")):
         raise SystemExit("Falta CDC_API_SECRET/CRYPTO_COM_API_SECRET en el runner")
     apply_runtime_env(next_job)
+    seed_local_feedback()
     since = time.time()
     try:
         returncode, output, duration = run_cycle(args.timeout)
@@ -149,12 +191,13 @@ def main():
     except subprocess.TimeoutExpired as exc:
         returncode, duration, status = 124, args.timeout, "timeout"
         output = (exc.stdout or "")[-8000:] if isinstance(exc.stdout, str) else ""
+    supervisor = run_supervisor(int(os.getenv("RUNNER_SUPERVISOR_TIMEOUT_SECONDS", "240")), next_job.get("cycle"))
     report = {
         "status": status,
         "cycle": next_job.get("cycle"),
         "returncode": returncode,
         "duration_seconds": round(duration, 2),
-        "summary": {"stdout_tail": output[-2000:]},
+        "summary": {"stdout_tail": output[-2000:], "supervisor": supervisor},
         "logs": read_log_events(since),
     }
     request_json("POST", "/api/v1/runner/report", report)
