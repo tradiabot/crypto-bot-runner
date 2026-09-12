@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -e
+BOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$BOT_DIR"
+exec python3 ./crypto_supervisor.py --loop "$@"

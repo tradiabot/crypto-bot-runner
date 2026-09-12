@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$BOT_DIR"
+
+export AUTO_EXECUTE="${AUTO_EXECUTE:-YES}"
+export AUTO_LIVE="${AUTO_LIVE:-YES}"
+export CONFIRM_LIVE="${CONFIRM_LIVE:-YES}"
+export SUPERVISOR_EXECUTE="${SUPERVISOR_EXECUTE:-NO}"
+
+supervisor_pid=""
+cleanup() {
+  if [[ -n "${supervisor_pid}" ]] && kill -0 "${supervisor_pid}" 2>/dev/null; then
+    kill "${supervisor_pid}" 2>/dev/null || true
+    wait "${supervisor_pid}" 2>/dev/null || true
+  fi
+}
+trap cleanup EXIT INT TERM
+
+python3 ./crypto_supervisor.py --loop &
+supervisor_pid=$!
+
+exec ./crypto-auto-loop "$@"

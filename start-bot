@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -e
+BOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$BOT_DIR"
+if [[ "${AI_PROVIDER:-ollama}" == "ollama" ]]; then
+  python3 -c 'from ollama_runtime import ensure_server; ok, detail = ensure_server(wait_seconds=20); print("OLLAMA SERVER: " + detail); raise SystemExit(0 if ok else 1)' >&2
+fi
+exec ./crypto-scan "$@"

@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+LOG_DIR="$ROOT/.runtime"
+LOG_FILE="$LOG_DIR/crypto-swarm.log"
+PID_FILE="$LOG_DIR/crypto-watchdog.pid"
+LOCK_FILE="$LOG_DIR/crypto-watchdog.lock"
+HEARTBEAT_FILE="$LOG_DIR/crypto-auto-heartbeat.json"
+STOP_FILE="$LOG_DIR/crypto-stop.request"
+RESTART_DELAY="${WATCHDOG_RESTART_SECONDS:-5}"
+HEARTBEAT_POLL_SECONDS="${WATCHDOG_HEARTBEAT_POLL_SECONDS:-5}"
+HEARTBEAT_STALE_SECONDS="${WATCHDOG_HEARTBEAT_STALE_SECONDS:-45}"
+HEARTBEAT_START_GRACE_SECONDS="${WATCHDOG_HEARTBEAT_START_GRACE_SECONDS:-90}"
+child_pid=""
+mkdir -p "$LOG_DIR"
+exec >>"$LOG_FILE" 2>&1
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "$(date -u +%FT%TZ) WATCHDOG: ya existe una instancia activa"
+  exit 0
+fi
+
+cleanup() {
+  if [[ -n "$child_pid" ]] && kill -0 "$child_pid" 2>/dev/null; then
+    kill "$child_pid" 2>/dev/null || true
+    wait "$child_pid" 2>/dev/null || true
+  fi
+  rm -f "$PID_FILE"
+}
+trap cleanup EXIT
+trap 'exit 0' INT TERM
+
+# ENOSYS from sleep/fork/stat means the surrounding Termux/PRoot instance is
+# no longer usable. Exit promptly so the outer Termux watchdog can recreate
+# the complete PRoot session instead of producing a restart storm inside it.
+runtime_pause() {
+  local seconds="$1"
+  if ! sleep "$seconds" 2>/dev/null; then
+    echo "WATCHDOG: runtime PRoot no disponible (sleep devolvió ENOSYS); solicitando reinicio externo"
+    exit 75
+  fi
+}
+
+heartbeat_is_fresh() {
+  local modified now age
+  [[ -s "$HEARTBEAT_FILE" ]] || return 1
+  modified="$(stat -c %Y "$HEARTBEAT_FILE" 2>/dev/null || true)"
+  [[ "$modified" =~ ^[0-9]+$ ]] || return 1
+  now="$(date +%s)"
+  age=$((now-modified))
+  (( age >= 0 && age <= HEARTBEAT_STALE_SECONDS ))
+}
+
+terminate_child() {
+  local pid="$1"
+  kill "$pid" 2>/dev/null || true
+  runtime_pause 5
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+  wait "$pid" 2>/dev/null || true
+}
+
+CMD=("$@")
+if [[ ${#CMD[@]} -eq 0 ]]; then
+  CMD=("$ROOT/crypto-live")
+fi
+printf '%s\n' "$$" > "$PID_FILE"
+
+while true; do
+  if [[ -e "$STOP_FILE" ]]; then
+    echo "$(date -u +%FT%TZ) WATCHDOG: parada solicitada"
+    exit 0
+  fi
+  echo "$(date -u +%FT%TZ) WATCHDOG: iniciando ${CMD[*]}"
+  "${CMD[@]}" &
+  child_pid=$!
+  child_started="$(date +%s)"
+  code=0
+  watchdog_restart=""
+
+  while kill -0 "$child_pid" 2>/dev/null; do
+    if [[ -e "$STOP_FILE" ]]; then
+      echo "$(date -u +%FT%TZ) WATCHDOG: parada solicitada; terminando proceso"
+      terminate_child "$child_pid"
+      child_pid=""
+      exit 0
+    fi
+    runtime_pause "$HEARTBEAT_POLL_SECONDS"
+    now="$(date +%s)"
+    if (( now-child_started >= HEARTBEAT_START_GRACE_SECONDS )) && ! heartbeat_is_fresh; then
+      watchdog_restart="heartbeat sin actualizar por más de ${HEARTBEAT_STALE_SECONDS}s"
+      echo "$(date -u +%FT%TZ) WATCHDOG: $watchdog_restart; reiniciando proceso"
+      terminate_child "$child_pid"
+      code=124
+      child_pid=""
+      break
+    fi
+  done
+
+  if [[ -n "$child_pid" ]]; then
+    set +e
+    wait "$child_pid"
+    code=$?
+    set -e
+    child_pid=""
+  fi
+
+  echo "$(date -u +%FT%TZ) WATCHDOG: proceso terminado con código $code; relanzando en ${RESTART_DELAY}s"
+  runtime_pause "$RESTART_DELAY"
+done

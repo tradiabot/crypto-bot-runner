@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -a
+[ -f "$(dirname "$0")/.env" ] && source "$(dirname "$0")/.env"
+set +a
+exec python3 "$(dirname "$0")/crypto_trade.py" "$@"

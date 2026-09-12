@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BOT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$BOT_DIR"
+mkdir -p "$BOT_DIR/.runtime"
+
+printf '%s\n' "$$" > "$BOT_DIR/.runtime/crypto-live.pid"
+
+export AUTO_EXECUTE=YES
+export AUTO_LIVE=YES
+export CONFIRM_LIVE=YES
+export SUPERVISOR_EXECUTE=NO
+export PYTHONDONTWRITEBYTECODE=1
+
+supervisor_pid=""
+auto_pid=""
+cleanup() {
+  if [[ -n "$auto_pid" ]] && kill -0 "$auto_pid" 2>/dev/null; then
+    kill "$auto_pid" 2>/dev/null || true
+    wait "$auto_pid" 2>/dev/null || true
+  fi
+  if [[ -n "$supervisor_pid" ]] && kill -0 "$supervisor_pid" 2>/dev/null; then
+    kill "$supervisor_pid" 2>/dev/null || true
+    wait "$supervisor_pid" 2>/dev/null || true
+  fi
+  rm -f "$BOT_DIR/.runtime/crypto-live.pid" "$BOT_DIR/.runtime/crypto-supervisor.pid"
+}
+trap cleanup EXIT
+trap 'exit 0' INT TERM
+
+echo "TRADING REAL FORZADO · AUTO_EXECUTE=${AUTO_EXECUTE} · AUTO_LIVE=${AUTO_LIVE} · CONFIRM_LIVE=${CONFIRM_LIVE}" >&2
+rm -f "$BOT_DIR/.runtime/crypto-auto-heartbeat.json"
+./crypto-auto-loop "$@" &
+auto_pid=$!
+
+for _ in {1..20}; do
+  if [[ -s "$BOT_DIR/.runtime/crypto-auto-heartbeat.json" ]]; then
+    break
+  fi
+  if ! kill -0 "$auto_pid" 2>/dev/null; then
+    wait "$auto_pid"
+    exit $?
+  fi
+  sleep 0.25
+done
+
+python3 ./crypto_supervisor.py --loop &
+supervisor_pid=$!
+printf '%s\n' "$supervisor_pid" > "$BOT_DIR/.runtime/crypto-supervisor.pid"
+
+set +e
+wait -n "$auto_pid" "$supervisor_pid"
+exit_code=$?
+set -e
+exit "$exit_code"

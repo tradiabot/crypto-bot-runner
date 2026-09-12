@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+cd "$ROOT"
+mkdir -p "$ROOT/.runtime"
+rm -f "$ROOT/.runtime/crypto-stop.request"
+export TRADING_SWARM_ENABLED="${TRADING_SWARM_ENABLED:-YES}"
+export TRADING_SWARM_MODE="${TRADING_SWARM_MODE:-ROTATE}"
+export TRADING_SWARM_ROLES="${TRADING_SWARM_ROLES:-SCOUT,CHALLENGER,RISK,ALLOCATOR,AUDITOR}"
+export TRADING_SWARM_CYCLE_STRIDE="${TRADING_SWARM_CYCLE_STRIDE:-1}"
+export TRADING_SWARM_MAX_CHUNK="${TRADING_SWARM_MAX_CHUNK:-1}"
+
+if [[ "${1:-}" == "--foreground" ]]; then
+  exec "$ROOT/crypto-watchdog" "$ROOT/crypto-live"
+fi
+
+nohup "$ROOT/crypto-watchdog" "$ROOT/crypto-live" >/dev/null 2>&1 &
+launcher_pid=$!
+
+pid=""
+for _ in {1..50}; do
+  if [[ -s "$ROOT/.runtime/crypto-watchdog.pid" ]]; then
+    pid="$(cat "$ROOT/.runtime/crypto-watchdog.pid" 2>/dev/null || true)"
+    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+      break
+    fi
+  fi
+  sleep 0.1
+done
+
+if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+  pid=""
+fi
+
+pid="${pid:-$launcher_pid}"
+printf '%s\n' "$pid" > "$ROOT/.runtime/crypto-swarm.pid"
+echo "Swarm iniciado en background (PID $pid)."
+echo "Logs: $ROOT/.runtime/crypto-swarm.log"
+echo "Seguimiento: tail -f $ROOT/.runtime/crypto-swarm.log"

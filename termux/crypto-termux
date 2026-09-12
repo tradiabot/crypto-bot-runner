@@ -1,0 +1,25 @@
+#!/data/data/com.termux/files/usr/bin/bash
+set -euo pipefail
+CMD="${1:-start}"
+shift || true
+case "$CMD" in
+  start)
+    exec "$(cd "$(dirname "$0")" && pwd)/crypto-termux-start.sh" "$@"
+    ;;
+  stop)
+    exec "$(cd "$(dirname "$0")" && pwd)/crypto-termux-stop.sh" "$@"
+    ;;
+  status)
+    exec "$(cd "$(dirname "$0")" && pwd)/crypto-termux-status.sh" "$@"
+    ;;
+  boot)
+    exec "$(cd "$(dirname "$0")" && pwd)/crypto-termux-boot.sh" "$@"
+    ;;
+  install)
+    exec "$(cd "$(dirname "$0")" && pwd)/crypto-termux-install.sh" "$@"
+    ;;
+  *)
+    echo "Uso: crypto-termux {start|stop|status|boot|install}"
+    exit 1
+    ;;
+esac

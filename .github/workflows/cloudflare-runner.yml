@@ -1,0 +1,37 @@
+name: Cloudflare Crypto Runner
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+concurrency:
+  group: crypto-bot-cloudflare-runner
+  cancel-in-progress: false
+
+jobs:
+  run-cycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install script runtime
+        run: npm install -g tsx
+
+      - name: Run one remote-controlled cycle
+        env:
+          CLOUDFLARE_API_URL: ${{ secrets.CLOUDFLARE_API_URL }}
+          RUNNER_TOKEN: ${{ secrets.RUNNER_TOKEN }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          CDC_API_KEY: ${{ secrets.CDC_API_KEY }}
+          CDC_API_SECRET: ${{ secrets.CDC_API_SECRET }}
+        run: python3 ./cloudflare_runner.py
