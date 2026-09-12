@@ -25,7 +25,7 @@ jobs:
           node-version: "22"
 
       - name: Install script runtime
-        run: npm install -g tsx
+        run: npm install tsx
 
       - name: Run one remote-controlled cycle
         env:

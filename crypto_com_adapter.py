@@ -12,10 +12,12 @@ import sys
 import time
 from decimal import Decimal, ROUND_DOWN
 
-SKILL = "/root/.agents/skills/crypto-com-app/scripts"
+ROOT = os.path.dirname(__file__)
+LOCAL_SKILL = os.path.join(ROOT, "crypto_com_skill", "scripts")
+SKILL = os.getenv("CRYPTO_COM_SKILL_SCRIPTS", LOCAL_SKILL if os.path.isdir(LOCAL_SKILL) else "/root/.agents/skills/crypto-com-app/scripts")
 SOURCE = "USDC"
 MAX_USDC = 2.0
-RUNTIME_DIR = os.path.join(os.path.dirname(__file__), ".runtime")
+RUNTIME_DIR = os.path.join(ROOT, ".runtime")
 LOT_STEP_OVERRIDES_PATH = os.path.join(RUNTIME_DIR, "lot_step_overrides.json")
 LOT_STEP_CACHE = {"ts": 0.0, "data": {}}
 

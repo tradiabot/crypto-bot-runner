@@ -5,7 +5,8 @@ from exchange_adapter import universe as configured_universe
 from trading_swarm import enabled as swarm_enabled, prompt_prefix as swarm_prompt_prefix, role_for_cycle
 ROOT=os.path.dirname(os.path.abspath(__file__))
 MARKET_CACHE_PATH=os.path.join(ROOT,".runtime","latest-market.json")
-SKILL="/root/.agents/skills/crypto-com-app/scripts"; DEFAULT=["BTC","ETH","SOL","CRO","ADA","AVAX","LINK","DOT","MATIC","APT"]
+LOCAL_SKILL=os.path.join(ROOT,"crypto_com_skill","scripts")
+SKILL=os.getenv("CRYPTO_COM_SKILL_SCRIPTS", LOCAL_SKILL if os.path.isdir(LOCAL_SKILL) else "/root/.agents/skills/crypto-com-app/scripts"); DEFAULT=["BTC","ETH","SOL","CRO","ADA","AVAX","LINK","DOT","MATIC","APT"]
 def load_env():
  p=os.path.join(os.path.dirname(__file__),".env")
  if os.path.exists(p):
