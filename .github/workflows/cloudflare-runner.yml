@@ -2,6 +2,8 @@ name: Cloudflare Crypto Runner
 
 on:
   workflow_dispatch:
+  repository_dispatch:
+    types: [crypto-bot-cycle]
 
 concurrency:
   group: crypto-bot-cloudflare-runner
