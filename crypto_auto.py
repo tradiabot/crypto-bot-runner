@@ -823,6 +823,24 @@ def main():
         print(f"CAPITAL USDC: no disponible ({exc})")
         log_event("capital_status_error", error=str(exc))
     symbol, signal, amount = pick_signal(opps, items, perf, adaptive)
+    # pick_signal refreshes/logs the portfolio snapshot. Recalculate risk from
+    # that fresh equity before any decision can reach the exchange.
+    adaptive=adaptive_status()
+    log_event("adaptive_risk", **adaptive)
+    if adaptive.get("hard_loss_halt"):
+        loss=float(adaptive.get("loss_usd",0) or 0)
+        baseline=float(adaptive.get("baseline_equity",0) or 0)
+        resume=float((adaptive.get("thresholds") or {}).get("resume_loss_usd",0.25) or 0.25)
+        hold_signal={
+            "action":"HOLD",
+            "confidence":1.0,
+            "strategy":"MAX_DRAWDOWN_USD",
+            "origin":"risk_engine",
+            "reason":f"Freno de cartera activo: perdida USD {loss:.2f} desde maximo USD {baseline:.2f}; HOLD hasta quedar a USD {resume:.2f} o menos del maximo.",
+        }
+        print(f"AUTO: HOLD DE SEGURIDAD · {hold_signal['reason']}")
+        log_event("decision_hold", signal=hold_signal, adaptive_risk=adaptive)
+        return 0
     if not symbol or signal.get('action')=='HOLD':
         print(f"AUTO: HOLD · {signal.get('reason','sin oportunidad')}")
         log_event("decision_hold", signal=signal)

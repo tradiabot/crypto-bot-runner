@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Adaptive risk controls derived from local bot history."""
 import json, os
-from statistics import median
 from collections import Counter, defaultdict
 
 ROOT=os.path.dirname(os.path.abspath(__file__))
@@ -50,7 +49,9 @@ def status(events=None):
         return {'enabled':False,'stage':'disabled','halted':False,'max_trade_usdc':_float_env('MAX_TRADE_USDC',1.0),'min_confidence':_float_env('MIN_CONFIDENCE',.48),'drawdown_pct':0}
     events=events if events is not None else _events()
     values=_portfolio_values(events)
-    current=median(values[-3:]) if values else 0
+    # The latest portfolio snapshot is authoritative. A median here delayed a
+    # hard-loss stop and could allow another order after the threshold was hit.
+    current=values[-1] if values else 0
     mode=os.getenv('ADAPTIVE_BASELINE_MODE','RECENT_HIGH').upper()
     state=_load_state()
     configured=_float_env('ADAPTIVE_BASELINE_USD',0)
@@ -76,10 +77,26 @@ def status(events=None):
         state.update({'baseline_equity':baseline,'baseline_source':source})
         _save_state(state)
     drawdown=max(0,(baseline-current)/baseline) if baseline>0 and current>0 else 0
+    loss_usd=max(0,baseline-current) if baseline>0 and current>0 else 0
     warn=_float_env('ADAPTIVE_WARN_LOSS_PCT',.05)
     reduce=_float_env('ADAPTIVE_REDUCE_LOSS_PCT',.10)
     halt=_float_env('ADAPTIVE_HALT_LOSS_PCT',.20)
-    if drawdown>=halt:
+    halt_loss_usd=_float_env('ADAPTIVE_HALT_LOSS_USD',5.0)
+    resume_loss_usd=_float_env('ADAPTIVE_RESUME_LOSS_USD',0.25)
+    previous_hard_halt=bool(state.get('hard_loss_halt',False))
+    if 'hard_loss_halt' not in state:
+        for event in reversed(events):
+            if event.get('event')!='adaptive_risk':
+                continue
+            previous_hard_halt=bool((event.get('data') or {}).get('hard_loss_halt'))
+            break
+    hard_loss_halt=(halt_loss_usd>0 and loss_usd>=halt_loss_usd) or (previous_hard_halt and loss_usd>resume_loss_usd)
+    if state.get('hard_loss_halt') is not hard_loss_halt:
+        state['hard_loss_halt']=hard_loss_halt
+        _save_state(state)
+    if hard_loss_halt:
+        stage,mult='halt',0
+    elif drawdown>=halt:
         stage,mult='halt',0
     elif drawdown>=reduce:
         stage,mult='reduce',_float_env('ADAPTIVE_REDUCE_TRADE_MULTIPLIER',.5)
@@ -94,7 +111,7 @@ def status(events=None):
     if stage!='halt' and base_trade>=minimum_trade>0:
         adjusted_trade=max(minimum_trade,adjusted_trade)
     add=_float_env('ADAPTIVE_MIN_CONFIDENCE_ADD',.02) if stage in {'reduce','halt'} else 0
-    return {'enabled':True,'stage':stage,'halted':stage=='halt','baseline_equity':round(baseline,6),'current_equity':round(current,6),'drawdown_pct':round(drawdown,6),'baseline_source':source,'thresholds':{'warn':warn,'reduce':reduce,'halt':halt},'base_max_trade_usdc':base_trade,'base_min_confidence':base_conf,'max_trade_usdc':round(adjusted_trade,8),'min_confidence':min(1,base_conf+add),'allow_risk_reducing_sells':os.getenv('ADAPTIVE_ALLOW_RISK_REDUCING_SELLS','YES').upper()=='YES'}
+    return {'enabled':True,'stage':stage,'halted':stage=='halt','hard_loss_halt':hard_loss_halt,'halt_reason':'max_drawdown_usd' if hard_loss_halt else None,'baseline_equity':round(baseline,6),'current_equity':round(current,6),'loss_usd':round(loss_usd,6),'drawdown_pct':round(drawdown,6),'baseline_source':source,'thresholds':{'warn':warn,'reduce':reduce,'halt':halt,'halt_loss_usd':halt_loss_usd,'resume_loss_usd':resume_loss_usd},'base_max_trade_usdc':base_trade,'base_min_confidence':base_conf,'max_trade_usdc':round(adjusted_trade,8),'min_confidence':min(1,base_conf+add),'allow_risk_reducing_sells':False if hard_loss_halt else os.getenv('ADAPTIVE_ALLOW_RISK_REDUCING_SELLS','YES').upper()=='YES'}
 
 def feedback_context(events=None):
     events=events if events is not None else _events(); counts=Counter(e.get('event','unknown') for e in events); trades=[e for e in events if e.get('event')=='trade_executed']; by=defaultdict(Counter)
