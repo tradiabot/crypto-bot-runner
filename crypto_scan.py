@@ -298,7 +298,35 @@ def ask_groq_model(model, prompt):
   ],
   "temperature":float(os.getenv("GROQ_TEMPERATURE", "0.15")),
   "max_completion_tokens":int(os.getenv("GROQ_MAX_COMPLETION_TOKENS", "500")),
-  "response_format":{"type":"json_object"},
+  "reasoning_effort":os.getenv("GROQ_REASONING_EFFORT", "low"),
+  "response_format":{
+   "type":"json_schema",
+   "json_schema":{
+    "name":"trading_signals",
+    "strict":True,
+    "schema":{
+     "type":"object",
+     "properties":{
+      "opportunities":{
+       "type":"array",
+       "items":{
+        "type":"object",
+        "properties":{
+         "symbol":{"type":"string"},
+         "action":{"type":"string","enum":["BUY","SELL","HOLD"]},
+         "confidence":{"type":"number","minimum":0,"maximum":1},
+         "reason":{"type":"string"},
+        },
+        "required":["symbol","action","confidence","reason"],
+        "additionalProperties":False,
+       },
+      },
+     },
+     "required":["opportunities"],
+     "additionalProperties":False,
+    },
+   },
+  },
  }
  request=urllib.request.Request(
   base_url+"/chat/completions",
@@ -390,6 +418,7 @@ def ask_once(items, role=None):
  for provider in providers:
   if provider == "technical":
    result={"opportunities":[technical_fallback(x,"IA remota no disponible; fallback técnico seguro") for x in items]}
+   result["provider_used"]="technical"
    result["model_used"]="technical"
    result["fallback_from"]=errors
    return result

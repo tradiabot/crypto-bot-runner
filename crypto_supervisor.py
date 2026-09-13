@@ -222,9 +222,8 @@ def self_repair_params(feedback, adaptive):
         changes["AI_CHUNK_SIZE"] = "1"
         reasons.append("swarm_prompt_repair")
 
-    if "REQUIRE_AI_FOR_EXECUTION=YES" in error_text or counts.get("ai_execution_block", 0) > 0:
-        changes["REQUIRE_AI_FOR_EXECUTION"] = "NO"
-        reasons.append("ai_gate_repair")
+    # A supervisor may repair timeouts and formatting, but it must never weaken
+    # the hard requirement for a healthy remote AI provider before live orders.
 
     stage=str(adaptive.get("stage", "unknown"))
     if stage in {"normal", "warn", "reduce", "halt"}:

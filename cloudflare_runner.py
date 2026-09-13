@@ -7,6 +7,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -79,12 +80,20 @@ def read_log_events(since: float, limit: int = 120):
         if not isinstance(item, dict):
             continue
         try:
-            ts_text = str(item.get("ts", ""))
-            event_time = time.mktime(time.strptime(ts_text[:19], "%Y-%m-%dT%H:%M:%S"))
-            if event_time + 2 < since:
-                continue
-        except Exception:
-            pass
+            ts_text = str(item.get("ts", "")).strip()
+            # Local events use ISO 8601 while D1 uses ``YYYY-MM-DD HH:MM:SS``.
+            # Treat naive values as UTC: GitHub runners are ephemeral and seeded
+            # history must never be uploaded again as activity from this cycle.
+            parsed = datetime.fromisoformat(ts_text.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            event_time = parsed.timestamp()
+        except (TypeError, ValueError):
+            # An event without a trustworthy timestamp cannot safely be
+            # attributed to the current run.
+            continue
+        if event_time + 2 < since:
+            continue
         events.append(redact(item))
     return events[-limit:]
 
@@ -100,11 +109,21 @@ def seed_local_feedback(limit: int = 300):
     if not isinstance(rows, list):
         return
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    seen_trade_ids = set()
     with LOG_PATH.open("w", encoding="utf-8") as handle:
         for row in reversed(rows):
             if not isinstance(row, dict) or not row.get("event"):
                 continue
-            item = {"ts": row.get("ts"), "event": row.get("event"), "data": row.get("data", {})}
+            data = row.get("data", {}) if isinstance(row.get("data"), dict) else {}
+            if row.get("event") == "trade_executed":
+                result = data.get("result", {}) if isinstance(data.get("result"), dict) else {}
+                trade_id = result.get("id")
+                if trade_id is not None:
+                    trade_key = str(trade_id)
+                    if trade_key in seen_trade_ids:
+                        continue
+                    seen_trade_ids.add(trade_key)
+            item = {"ts": row.get("ts"), "event": row.get("event"), "data": data}
             handle.write(json.dumps(item, ensure_ascii=False) + "\n")
 
 

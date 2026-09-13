@@ -459,7 +459,16 @@ def calibrated(signal, market):
         else: confidence=0.45; reason="tendencia y retroceso fuera de límites"
     else:
         confidence=0.45; reason="sin oportunidad validada"
-    return {"action":action,"confidence":confidence,"strategy":signal.get("strategy","TREND"),"reason":reason,"source":("USDT" if selected_exchange() == "coinex" else "USDC")}
+    return {
+        "action":action,
+        "confidence":confidence,
+        "strategy":signal.get("strategy","TREND"),
+        "reason":reason,
+        "source":("USDT" if selected_exchange() == "coinex" else "USDC"),
+        "origin":signal.get("origin", "technical"),
+        "ai_provider":signal.get("ai_provider"),
+        "ai_model":signal.get("ai_model"),
+    }
 
 def sell_signal(symbol, market):
     try:
@@ -785,10 +794,19 @@ def main():
     ai_error=bool(ai_data.get('error'))
     ai_partial_error=bool(ai_data.get('partial_errors'))
     require_ai=os.getenv("REQUIRE_AI_FOR_EXECUTION","YES").upper()=="YES"
-    if (ai_error or ai_partial_error) and require_ai:
+    requested_provider=os.getenv("AI_PROVIDER", "groq").strip().lower()
+    provider_used=str(ai_data.get("provider_used", "")).strip().lower()
+    model_used=str(ai_data.get("model_used", "")).strip().lower()
+    remote_ai_ok=provider_used == requested_provider and model_used not in {"", "technical"}
+    if require_ai and (ai_error or ai_partial_error or not remote_ai_ok):
         print("AUTO: IA no disponible; ejecucion bloqueada por REQUIRE_AI_FOR_EXECUTION=YES")
         log_event("ai_execution_block", ai=ai_data)
         return 0
+    for opportunity in ai_data.get("opportunities", []):
+        if isinstance(opportunity, dict):
+            opportunity["origin"] = provider_used or "unknown"
+            opportunity["ai_provider"] = provider_used or None
+            opportunity["ai_model"] = ai_data.get("model_used")
     if os.getenv("AUTO_FULL_SCAN_NOW","NO").upper()=="YES":
         universe_recommendation=recommend_universe(report, perf)
         if universe_recommendation.get("changed"):
@@ -831,7 +849,7 @@ def main():
         print('AUTO: aprobado y armado; sin ejecución.')
         log_event('armed_no_execution', symbol=symbol, amount=amount, signal=signal)
         return
-    if require_ai and (ai_error or ai_partial_error):
+    if require_ai and (ai_error or ai_partial_error or not remote_ai_ok):
         print('AUTO: bloqueo final de seguridad: IA fallida, no se cotiza ni confirma orden')
         log_event('ai_final_execution_block', symbol=symbol, amount=amount, signal=signal)
         return
