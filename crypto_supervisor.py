@@ -192,24 +192,24 @@ def self_repair_params(feedback, adaptive):
 
     if scanner_repeats >= 2 or recent_timeout_errors:
         current_scan_timeout = env_int("AUTO_SCAN_TIMEOUT_SECONDS", 180)
-        current_generate_timeout = env_int("OLLAMA_GENERATE_TIMEOUT_SECONDS", 150)
-        current_model_timeout = env_int("OLLAMA_MODEL_TIMEOUT_SECONDS", 120)
+        current_groq_timeout = env_int("GROQ_TIMEOUT_SECONDS", 45)
+        current_groq_tokens = env_int("GROQ_MAX_COMPLETION_TOKENS", 500)
         timeout_cap = max(120, min(env_int("AUTO_SCAN_TIMEOUT_HARD_MAX", 210), 240))
         new_scan_timeout = str(min(max(current_scan_timeout, 180), timeout_cap))
-        new_generate_timeout = str(min(max(current_generate_timeout, 240), 360))
-        new_model_timeout = str(min(max(current_model_timeout, 240), 360))
+        new_groq_timeout = str(min(max(current_groq_timeout, 60), 120))
+        new_groq_tokens = str(min(max(current_groq_tokens, 700), 1200))
         if new_scan_timeout != str(current_scan_timeout):
             changes["AUTO_SCAN_TIMEOUT_SECONDS"] = new_scan_timeout
-        if new_generate_timeout != str(current_generate_timeout):
-            changes["OLLAMA_GENERATE_TIMEOUT_SECONDS"] = new_generate_timeout
-        if new_model_timeout != str(current_model_timeout):
-            changes["OLLAMA_MODEL_TIMEOUT_SECONDS"] = new_model_timeout
+        if new_groq_timeout != str(current_groq_timeout):
+            changes["GROQ_TIMEOUT_SECONDS"] = new_groq_timeout
+        if new_groq_tokens != str(current_groq_tokens):
+            changes["GROQ_MAX_COMPLETION_TOKENS"] = new_groq_tokens
         changes.setdefault("AI_CHUNK_SIZE", "1")
         changes.setdefault("TRADING_SWARM_MAX_CHUNK", "1")
         reasons.append("scanner_retries")
 
     if "JSON invalido" in error_text or "unparseable ai response" in error_text:
-        changes["OLLAMA_OUTPUT_FORMAT"] = "json"
+        changes["GROQ_REASONING_EFFORT"] = os.getenv("GROQ_REASONING_EFFORT", "medium")
         changes["AI_CHUNK_SIZE"] = "1"
         changes["TRADING_SWARM_MAX_CHUNK"] = "1"
         reasons.append("ai_json_repair")
@@ -289,8 +289,8 @@ def recommend_frequency_params(report, adaptive):
     enabled = os.getenv("AI_FREQUENCY_AUTOPILOT", "YES").upper() == "YES"
     current_max = env_int("MAX_TRADES_PER_DAY", 6)
     current_cooldown = env_int("COOLDOWN_AFTER_TRADE_SECONDS", 900)
-    ceiling = max(current_max, env_int("AI_FREQUENCY_MAX_TRADES_PER_DAY", 40))
-    floor_cooldown = max(60, env_int("AI_FREQUENCY_MIN_COOLDOWN_SECONDS", 600))
+    ceiling = min(max(current_max, env_int("AI_FREQUENCY_MAX_TRADES_PER_DAY", 4)), 4)
+    floor_cooldown = max(3600, env_int("AI_FREQUENCY_MIN_COOLDOWN_SECONDS", 3600))
     step = max(1, env_int("AI_FREQUENCY_RAISE_STEP", 3))
     confidence = min(1.0, max(0.5, env_float("AI_FREQUENCY_STRONG_CONFIDENCE", 0.70)))
     stage = str(adaptive.get("stage", "unknown"))
@@ -380,16 +380,17 @@ def recommend_params(report, perf, adaptive, feedback):
     values,order=read_env()
     current_scan_timeout=env_int("AUTO_SCAN_TIMEOUT_SECONDS",180)
     timeout_cap=max(120,min(env_int("AUTO_SCAN_TIMEOUT_HARD_MAX",210),240))
-    current_generate_timeout=env_int("OLLAMA_GENERATE_TIMEOUT_SECONDS",150)
-    current_model_timeout=env_int("OLLAMA_MODEL_TIMEOUT_SECONDS",120)
+    current_groq_timeout=env_int("GROQ_TIMEOUT_SECONDS",45)
+    current_groq_tokens=env_int("GROQ_MAX_COMPLETION_TOKENS",500)
+    current_groq_reasoning=os.getenv("GROQ_REASONING_EFFORT", "medium")
     current_min_conf=env_float("MIN_CONFIDENCE",0.50)
     current_max_trade=env_float("MAX_TRADE_USDC",2.0)
     current_reserve=env_float("BASE_RESERVE_RATIO",0.30)
 
     if feedback.get("counts",{}).get("scan_timeout",0)>0 or report.get("ai",{}).get("partial_errors"):
         current_scan_timeout=min(max(current_scan_timeout,180),timeout_cap)
-        current_generate_timeout=min(max(current_generate_timeout,240),360)
-        current_model_timeout=min(max(current_model_timeout,180),360)
+        current_groq_timeout=min(max(current_groq_timeout,60),120)
+        current_groq_tokens=min(max(current_groq_tokens,700),1200)
     if feedback.get("counts",{}).get("frequency_block",0)>0:
         current_scan_timeout=min(max(current_scan_timeout,180),timeout_cap)
 
@@ -415,8 +416,12 @@ def recommend_params(report, perf, adaptive, feedback):
 
     desired={
         "AUTO_SCAN_TIMEOUT_SECONDS":str(int(current_scan_timeout)),
-        "OLLAMA_GENERATE_TIMEOUT_SECONDS":str(int(current_generate_timeout)),
-        "OLLAMA_MODEL_TIMEOUT_SECONDS":str(int(current_model_timeout)),
+        "GROQ_TIMEOUT_SECONDS":str(int(current_groq_timeout)),
+        "GROQ_MAX_COMPLETION_TOKENS":str(int(current_groq_tokens)),
+        "GROQ_REASONING_EFFORT":current_groq_reasoning,
+        "AI_PROVIDER":"groq",
+        "AI_FALLBACK_PROVIDERS":"",
+        "REQUIRE_AI_FOR_EXECUTION":"YES",
         "MIN_CONFIDENCE":f"{current_min_conf:.2f}",
         "MAX_TRADE_USDC":f"{current_max_trade:.8f}".rstrip("0").rstrip(".") or "0",
         "BASE_RESERVE_RATIO":f"{current_reserve:.2f}",

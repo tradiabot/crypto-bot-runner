@@ -138,9 +138,12 @@ def apply_runtime_env(next_job):
             "CONFIRM_LIVE": "YES",
             "SUPERVISOR_EXECUTE": "NO",
             "AI_PROVIDER": "groq",
-            "AI_FALLBACK_PROVIDERS": "technical",
+            "AI_FALLBACK_PROVIDERS": "",
             "GROQ_MODEL": str(next_job.get("ai", {}).get("model") or os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b"),
             "REQUIRE_AI_FOR_EXECUTION": "YES",
+            "GROQ_REASONING_EFFORT": "medium",
+            "GROQ_TIMEOUT_SECONDS": "60",
+            "GROQ_MAX_COMPLETION_TOKENS": "700",
             "UNIVERSE_AUTOPILOT_APPLY": "YES",
         }
     )
