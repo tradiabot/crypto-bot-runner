@@ -367,9 +367,14 @@ def recent_trade_block(symbol, action):
     except ValueError:
         cooldown=3600
     try:
+        reversal_cooldown=int(os.getenv("REVERSAL_COOLDOWN_SECONDS", str(max(cooldown, 3600))))
+    except ValueError:
+        reversal_cooldown=max(cooldown, 3600)
+    try:
         error_cooldown=int(os.getenv("EXECUTION_ERROR_COOLDOWN_SECONDS","900"))
     except ValueError:
         error_cooldown=900
+    requested_action=str(action or "").upper()
     now=time.time()
     for event in reversed(read_events(500)):
         name=event.get("event")
@@ -383,16 +388,19 @@ def recent_trade_block(symbol, action):
                 age=error_cooldown
             if age < error_cooldown:
                 return True, f"{symbol} bloqueado por error reciente {int(error_cooldown-age)}s"
-        if name != "trade_executed" or cooldown <= 0:
+        if name != "trade_executed":
             continue
         signal=data.get("signal",{}) if isinstance(data.get("signal"),dict) else {}
-        if str(signal.get("action","")).upper() == action.upper():
-            try:
-                age=now-float(event.get("epoch",0) or 0)
-            except (TypeError, ValueError):
-                age=cooldown
-            if age < cooldown:
-                return True, f"{symbol} {action} cooldown activo {int(cooldown-age)}s"
+        previous_action=str(signal.get("action","")).upper()
+        try:
+            age=now-float(event.get("epoch",0) or 0)
+        except (TypeError, ValueError):
+            age=max(cooldown, reversal_cooldown)
+        if previous_action == requested_action and cooldown > 0 and age < cooldown:
+            return True, f"{symbol} {requested_action} cooldown activo {int(cooldown-age)}s"
+        if previous_action and previous_action != requested_action and reversal_cooldown > 0 and age < reversal_cooldown:
+            return True, f"{symbol} reversa {previous_action}->{requested_action} bloqueada {int(reversal_cooldown-age)}s"
+        if previous_action == requested_action:
             return False, ""
     return False, ""
 
