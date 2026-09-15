@@ -195,9 +195,16 @@ def self_repair_params(feedback, adaptive):
         current_groq_timeout = env_int("GROQ_TIMEOUT_SECONDS", 45)
         current_groq_tokens = env_int("GROQ_MAX_COMPLETION_TOKENS", 500)
         timeout_cap = max(120, min(env_int("AUTO_SCAN_TIMEOUT_HARD_MAX", 210), 240))
-        new_scan_timeout = str(min(max(current_scan_timeout, 180), timeout_cap))
-        new_groq_timeout = str(min(max(current_groq_timeout, 60), 120))
-        new_groq_tokens = str(min(max(current_groq_tokens, 700), 1200))
+        counts = feedback.get("counts", {}) if isinstance(feedback, dict) else {}
+        if counts.get("ai_execution_block", 0):
+            new_scan_timeout = str(min(max(current_scan_timeout, 120), 180))
+            new_groq_timeout = str(min(max(current_groq_timeout, 35), 60))
+            new_groq_tokens = str(min(max(current_groq_tokens, 250), 450))
+            changes["GROQ_REASONING_EFFORT"] = "low"
+        else:
+            new_scan_timeout = str(min(max(current_scan_timeout, 180), timeout_cap))
+            new_groq_timeout = str(min(max(current_groq_timeout, 60), 120))
+            new_groq_tokens = str(min(max(current_groq_tokens, 700), 1200))
         if new_scan_timeout != str(current_scan_timeout):
             changes["AUTO_SCAN_TIMEOUT_SECONDS"] = new_scan_timeout
         if new_groq_timeout != str(current_groq_timeout):
@@ -386,12 +393,18 @@ def recommend_params(report, perf, adaptive, feedback):
     current_min_conf=env_float("MIN_CONFIDENCE",0.50)
     current_max_trade=env_float("MAX_TRADE_USDC",2.0)
     current_reserve=env_float("BASE_RESERVE_RATIO",0.30)
+    counts=feedback.get("counts",{}) if isinstance(feedback,dict) else {}
 
-    if feedback.get("counts",{}).get("scan_timeout",0)>0 or report.get("ai",{}).get("partial_errors"):
+    if counts.get("ai_execution_block",0)>0:
+        current_scan_timeout=min(max(current_scan_timeout,120),180)
+        current_groq_timeout=min(max(current_groq_timeout,35),60)
+        current_groq_tokens=min(max(250,current_groq_tokens),450)
+        current_groq_reasoning="low"
+    elif counts.get("scan_timeout",0)>0 or report.get("ai",{}).get("partial_errors"):
         current_scan_timeout=min(max(current_scan_timeout,180),timeout_cap)
         current_groq_timeout=min(max(current_groq_timeout,60),120)
         current_groq_tokens=min(max(current_groq_tokens,700),1200)
-    if feedback.get("counts",{}).get("frequency_block",0)>0:
+    if counts.get("frequency_block",0)>0:
         current_scan_timeout=min(max(current_scan_timeout,180),timeout_cap)
 
     stage=str(adaptive.get("stage","unknown"))
@@ -402,7 +415,6 @@ def recommend_params(report, perf, adaptive, feedback):
     if stage=="normal":
         current_min_conf=base_conf
         current_max_trade=base_trade
-        counts=feedback.get("counts",{}) if isinstance(feedback,dict) else {}
         hard_errors=sum(int(counts.get(name,0) or 0) for name in ("scan_timeout","scanner_unavailable","ai_execution_block"))
         if hard_errors==0 and not report.get("ai",{}).get("partial_errors"):
             reserve_step=max(0.005,min(0.02,env_float("SUPERVISOR_RESERVE_STEP",0.01)))

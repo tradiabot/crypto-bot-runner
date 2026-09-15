@@ -139,11 +139,14 @@ def apply_runtime_env(next_job):
             "SUPERVISOR_EXECUTE": "NO",
             "AI_PROVIDER": "groq",
             "AI_FALLBACK_PROVIDERS": "",
-            "GROQ_MODEL": str(next_job.get("ai", {}).get("model") or os.getenv("GROQ_MODEL") or "openai/gpt-oss-120b"),
+            "GROQ_MODEL": str(next_job.get("ai", {}).get("model") or os.getenv("GROQ_MODEL") or "openai/gpt-oss-20b"),
             "REQUIRE_AI_FOR_EXECUTION": "YES",
-            "GROQ_REASONING_EFFORT": "medium",
-            "GROQ_TIMEOUT_SECONDS": "60",
-            "GROQ_MAX_COMPLETION_TOKENS": "700",
+            "GROQ_REASONING_EFFORT": "low",
+            "GROQ_TIMEOUT_SECONDS": "45",
+            "GROQ_MAX_COMPLETION_TOKENS": "350",
+            "AI_PREFILTER_CANDIDATES": "2",
+            "AI_CHUNK_SIZE": "1",
+            "TRADING_SWARM_MAX_CHUNK": "1",
             "UNIVERSE_AUTOPILOT_APPLY": "YES",
         }
     )
