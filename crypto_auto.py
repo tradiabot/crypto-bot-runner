@@ -520,6 +520,75 @@ def free_btc_amount():
     reserve=btc.get("amount",0.0)*reserve_ratio()
     return max(0.0, btc.get("amount",0.0)-reserve), btc
 
+
+
+def dust_sweep_enabled():
+    return os.getenv("DUST_SWEEP_TO_USDC", "0").strip().upper() in {"1", "YES", "TRUE", "ON"}
+
+def dust_sweep_recent(symbol):
+    try:
+        interval_hours=float(os.getenv("DUST_SWEEP_INTERVAL_HOURS", "24"))
+    except (TypeError, ValueError):
+        interval_hours=24.0
+    if interval_hours <= 0:
+        return False, ""
+    now=time.time()
+    for event in reversed(read_events(800)):
+        name=event.get("event")
+        data=event.get("data",{}) if isinstance(event.get("data"),dict) else {}
+        if str(data.get("symbol", "")).upper() != symbol.upper():
+            continue
+        if name not in {"trade_executed", "dust_sweep_error", "dust_sweep_block"}:
+            continue
+        signal=data.get("signal",{}) if isinstance(data.get("signal"),dict) else {}
+        if name == "trade_executed" and signal.get("strategy") != "DUST_SWEEP":
+            continue
+        try:
+            age=now-float(event.get("epoch",0) or 0)
+        except (TypeError, ValueError):
+            age=interval_hours*3600
+        remaining=interval_hours*3600-age
+        if remaining > 0:
+            return True, f"barrido reciente; faltan {int(remaining)}s"
+        return False, ""
+    return False, ""
+
+def pick_dust_sweep(snapshot):
+    if not dust_sweep_enabled():
+        return None, None, 0.0
+    if selected_exchange() != "crypto_com":
+        return None, None, 0.0
+    max_value=env_float("DUST_MAX_VALUE_USD", "1")
+    min_value=env_float("DUST_MIN_VALUE_USD", "0.05")
+    excluded={x.strip().upper() for x in os.getenv("DUST_SWEEP_EXCLUDE", "USDC,USDT,USD,BTC,ETH").split(",") if x.strip()}
+    candidates=[]
+    for symbol, asset in snapshot.get("assets", {}).items():
+        symbol=str(symbol).upper()
+        if symbol in excluded:
+            continue
+        amount=float(asset.get("amount",0.0) or 0.0)
+        value=float(asset.get("native_usd",0.0) or 0.0)
+        if amount <= 0 or value < min_value or value > max_value:
+            continue
+        recent, reason=dust_sweep_recent(symbol)
+        if recent:
+            log_event("dust_sweep_block", symbol=symbol, value_usd=value, reason=reason)
+            continue
+        candidates.append((value, symbol, amount))
+    if not candidates:
+        return None, None, 0.0
+    value, symbol, amount=sorted(candidates, key=lambda x: x[0], reverse=True)[0]
+    signal={
+        "action":"SELL",
+        "confidence":0.90,
+        "strategy":"DUST_SWEEP",
+        "reason":f"barrido de polvo a USDC: valor aprox USD {value:.2f}",
+        "source":symbol,
+        "origin":"dust_sweep",
+    }
+    log_event("dust_sweep_candidate", symbol=symbol, amount=amount, value_usd=value, signal=signal)
+    return symbol, signal, amount
+
 def pick_signal(opps, items, perf=None, adaptive=None):
     perf=perf or {}
     adaptive=adaptive or adaptive_status()
@@ -672,6 +741,9 @@ def pick_signal(opps, items, perf=None, adaptive=None):
         sell_candidates.sort(key=lambda x: (x[0], x[2].get("confidence",0.0), x[2].get("profit_state",{}).get("profit_pct",0.0), x[2].get("portfolio_weight",0.0)), reverse=True)
         _, symbol, signal, amount = sell_candidates[0]
         return symbol, signal, amount
+    dust_symbol, dust_signal, dust_amount = pick_dust_sweep(snapshot)
+    if dust_symbol and dust_signal and dust_amount > 0:
+        return dust_symbol, dust_signal, dust_amount
     if free_usdc >= min_usdc:
         reason=f"capital libre {free_usdc:.2f} USDC; sin señal elegible por asignación, confianza o cooldown"
     else:
@@ -839,16 +911,28 @@ def main():
         loss=float(adaptive.get("loss_usd",0) or 0)
         baseline=float(adaptive.get("baseline_equity",0) or 0)
         resume=float((adaptive.get("thresholds") or {}).get("resume_loss_usd",0.25) or 0.25)
-        hold_signal={
-            "action":"HOLD",
-            "confidence":1.0,
-            "strategy":"MAX_DRAWDOWN_USD",
-            "origin":"risk_engine",
-            "reason":f"Freno de cartera activo: perdida USD {loss:.2f} desde maximo USD {baseline:.2f}; HOLD hasta quedar a USD {resume:.2f} o menos del maximo.",
-        }
-        print(f"AUTO: HOLD DE SEGURIDAD · {hold_signal['reason']}")
-        log_event("decision_hold", signal=hold_signal, adaptive_risk=adaptive)
-        return 0
+        pstate=signal.get("profit_state", {}) if isinstance(signal, dict) else {}
+        recovery_sells_enabled=os.getenv("RECOVERY_SELLS_DURING_HALT", "1").strip().upper() in {"1", "YES", "TRUE", "ON"}
+        recovery_sell=(
+            recovery_sells_enabled
+            and isinstance(signal, dict)
+            and signal.get("action") == "SELL"
+            and signal.get("strategy") != "DUST_SWEEP"
+            and (pstate.get("profit_ok") or pstate.get("stop_loss") or signal.get("strategy") == "REBALANCE")
+        )
+        if not recovery_sell:
+            hold_signal={
+                "action":"HOLD",
+                "confidence":1.0,
+                "strategy":"MAX_DRAWDOWN_USD",
+                "origin":"risk_engine",
+                "reason":f"Freno de cartera activo: perdida USD {loss:.2f} desde maximo USD {baseline:.2f}; sin compras ni polvo; solo ventas defensivas hasta quedar a USD {resume:.2f} o menos del maximo.",
+            }
+            print(f"AUTO: HOLD DE SEGURIDAD · {hold_signal['reason']}")
+            log_event("decision_hold", signal=hold_signal, adaptive_risk=adaptive)
+            return 0
+        signal["reason"] = str(signal.get("reason", "")) + "; venta permitida en modo recuperacion/mitigacion"
+        log_event("recovery_sell_allowed", symbol=symbol, amount=amount, signal=signal, adaptive_risk=adaptive)
     if not symbol or signal.get('action')=='HOLD':
         print(f"AUTO: HOLD · {signal.get('reason','sin oportunidad')}")
         log_event("decision_hold", signal=signal)
@@ -911,7 +995,10 @@ def main():
         record_trade()
     except SystemExit as exc:
         print(f"AUTO: ejecución no realizada: {exc}")
-        log_event("execution_skipped", error=str(exc), symbol=symbol if 'symbol' in locals() else None)
+        if 'signal' in locals() and isinstance(signal, dict) and signal.get("strategy") == "DUST_SWEEP":
+            log_event("dust_sweep_error", error=str(exc), symbol=symbol if 'symbol' in locals() else None, amount=amount if 'amount' in locals() else None, signal=signal)
+        else:
+            log_event("execution_skipped", error=str(exc), symbol=symbol if 'symbol' in locals() else None)
         return 0
     finally:
         try:
