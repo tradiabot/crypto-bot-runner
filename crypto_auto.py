@@ -879,8 +879,24 @@ def main():
     model_used=str(ai_data.get("model_used", "")).strip().lower()
     remote_ai_ok=provider_used == requested_provider and model_used not in {"", "technical"}
     if require_ai and (ai_error or ai_partial_error or not remote_ai_ok):
-        print("AUTO: IA no disponible; ejecucion bloqueada por REQUIRE_AI_FOR_EXECUTION=YES")
-        log_event("ai_execution_block", ai=ai_data)
+        if ai_error:
+            block_reason=f"IA reporto error: {ai_data.get('error')}"
+        elif ai_partial_error:
+            block_reason="IA con errores parciales; ejecucion bloqueada por REQUIRE_AI_FOR_EXECUTION=YES"
+        elif provider_used != requested_provider:
+            block_reason=f"Proveedor IA invalido: recibido '{provider_used or 'vacio'}', requerido '{requested_provider}'"
+        else:
+            block_reason=f"Modelo IA invalido o ausente: recibido '{model_used or 'vacio'}'"
+        print(f"AUTO: {block_reason}")
+        log_event(
+            "ai_execution_block",
+            reason=block_reason,
+            provider_used=provider_used or None,
+            requested_provider=requested_provider,
+            model_used=model_used or None,
+            require_ai=require_ai,
+            ai=ai_data,
+        )
         return 0
     for opportunity in ai_data.get("opportunities", []):
         if isinstance(opportunity, dict):
