@@ -607,7 +607,7 @@ def pick_signal(opps, items, perf=None, adaptive=None):
             trendy.append(x)
     buys=sorted(trendy, key=lambda x: candidate_score(x, items.get(x.get("symbol"),{})), reverse=True)
     max_usdc=min(max_base_trade_amount(), float(adaptive.get("max_trade_usdc", max_base_trade_amount()) or 0.0))
-    min_usdc=float(os.getenv("MIN_TRADE_USDC","1"))
+    min_usdc=float(os.getenv("MIN_TRADE_USDC","5"))
     min_btc_native=float(os.getenv("MIN_BTC_TRADE_NATIVE_USD","1"))
     free_usdc=free_usdc_amount()
     low_capital_mode=free_usdc < min_usdc
@@ -616,9 +616,9 @@ def pick_signal(opps, items, perf=None, adaptive=None):
         if symbol in {"USDC","USDT"}:
             continue
         held=snapshot.get("assets",{}).get(symbol,{"amount":0.0,"native_usd":0.0})
-        min_native=float(os.getenv("MIN_SELL_NATIVE_USD", "1"))
+        min_native=float(os.getenv("MIN_SELL_NATIVE_USD", "5"))
         if selected_exchange() == "crypto_com":
-            min_native=max(min_native, float(os.getenv("CRYPTO_COM_MIN_SELL_NATIVE_USD", "2")))
+            min_native=max(min_native, float(os.getenv("CRYPTO_COM_MIN_SELL_NATIVE_USD", "5")))
         if held.get("amount",0.0) <= 0 or held.get("native_usd",0.0) < min_native:
             continue
         candidate=sell_signal(symbol, market)

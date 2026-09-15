@@ -39,10 +39,14 @@ def validate(signal, market, amount, daily_loss=0.0):
     if action == "BUY" and source not in {"USDC", "USDT", "BTC"}: errors.append("invalid_source")
     if action == "SELL" and source in {"USDC", "USDT"}: errors.append("invalid_source")
     if amount <= 0: errors.append("invalid_amount")
-    max_trade_usdc = env_float("MAX_TRADE_USDC", "0.75")
-    max_sell_native_usd = env_float("MAX_SELL_NATIVE_USD", "5")
+    max_trade_usdc = env_float("MAX_TRADE_USDC", "8")
+    min_trade_usdc = env_float("MIN_TRADE_USDC", "5")
+    max_sell_native_usd = env_float("MAX_SELL_NATIVE_USD", "8")
+    min_sell_native_usd = env_float("MIN_SELL_NATIVE_USD", "5")
     max_daily_loss_usdc = env_float("MAX_DAILY_LOSS_USDC", "1")
+    if action == "BUY" and source in {"USDC", "USDT"} and amount < min_trade_usdc: errors.append("trade_below_minimum_cost_guard")
     if action == "BUY" and source in {"USDC", "USDT"} and amount > max_trade_usdc: errors.append("trade_limit_exceeded")
+    if action == "SELL" and trade_value_usd < min_sell_native_usd: errors.append("sell_below_minimum_cost_guard")
     if action == "SELL" and trade_value_usd > max_sell_native_usd: errors.append("sell_limit_exceeded")
     if action == "BUY" and daily_loss >= max_daily_loss_usdc: errors.append("daily_loss_limit")
-    return {"approved": not errors, "errors": errors, "trade_value_usd": trade_value_usd, "limits": {"max_trade_usdc": max_trade_usdc, "max_sell_native_usd": max_sell_native_usd, "max_daily_loss_usdc": max_daily_loss_usdc}}
+    return {"approved": not errors, "errors": errors, "trade_value_usd": trade_value_usd, "limits": {"max_trade_usdc": max_trade_usdc, "min_trade_usdc": min_trade_usdc, "max_sell_native_usd": max_sell_native_usd, "min_sell_native_usd": min_sell_native_usd, "max_daily_loss_usdc": max_daily_loss_usdc}}
