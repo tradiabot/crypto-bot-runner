@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Adaptive risk controls derived from local bot history."""
-import json, os
+import json, os, time
 from collections import Counter, defaultdict
 
 ROOT=os.path.dirname(os.path.abspath(__file__))
@@ -44,11 +44,23 @@ def _portfolio_values(events):
         if value>0: out.append(value)
     return out
 
+def _portfolio_points(events):
+    out=[]
+    for e in events:
+        if e.get('event')!='portfolio_snapshot': continue
+        try: value=float((e.get('data') or {}).get('total_usd',0) or 0)
+        except (TypeError,ValueError): value=0
+        try: epoch=float(e.get('epoch',0) or 0)
+        except (TypeError,ValueError): epoch=0
+        if value>0: out.append((epoch,value))
+    return out
+
 def status(events=None):
     if os.getenv('ADAPTIVE_RISK_ENABLED','YES').upper()!='YES':
         return {'enabled':False,'stage':'disabled','halted':False,'max_trade_usdc':_float_env('MAX_TRADE_USDC',1.0),'min_confidence':_float_env('MIN_CONFIDENCE',.48),'drawdown_pct':0}
     events=events if events is not None else _events()
     values=_portfolio_values(events)
+    points=_portfolio_points(events)
     # The latest portfolio snapshot is authoritative. A median here delayed a
     # hard-loss stop and could allow another order after the threshold was hit.
     current=values[-1] if values else 0
@@ -57,6 +69,11 @@ def status(events=None):
     configured=_float_env('ADAPTIVE_BASELINE_USD',0)
     if configured>0:
         baseline,source=configured,'ADAPTIVE_BASELINE_USD'
+    elif mode in {'1D','24H','DAY','DAILY'} and points:
+        cutoff=time.time()-86400
+        day_points=[p for p in points if p[0] and p[0]>=cutoff]
+        baseline=(day_points[0][1] if day_points else points[-1][1])
+        source='portfolio_1d'
     elif state.get('baseline_equity',0):
         baseline,source=float(state['baseline_equity']),'persisted'
     elif values:
@@ -71,7 +88,7 @@ def status(events=None):
         source='stale_reset'
         state.update({'baseline_equity':baseline,'baseline_source':source})
         _save_state(state)
-    elif baseline>0 and configured<=0 and (persisted<=0 or (mode=='RECENT_HIGH' and current>persisted)):
+    elif baseline>0 and configured<=0 and mode not in {'1D','24H','DAY','DAILY'} and (persisted<=0 or (mode=='RECENT_HIGH' and current>persisted)):
         baseline=max(baseline,current)
         source='recent_high' if mode=='RECENT_HIGH' else source
         state.update({'baseline_equity':baseline,'baseline_source':source})
