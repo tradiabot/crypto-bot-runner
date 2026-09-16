@@ -439,6 +439,53 @@ def strong_sell_override_allowed(signal, market, asset, pstate, overweight, abov
     meaningful_position = weight >= env_float("STRONG_AI_SELL_MIN_WEIGHT", "0.05")
     return bearish_enough and meaningful_position
 
+def sell_high_policy_allowed(symbol, signal, market, asset, pstate, overweight, above_target):
+    """Global buy-low/sell-high guard for real execution.
+
+    Normal sells should realize profit over average cost. Selling below cost is
+    reserved for explicit defense (stop-loss/emergency) or dust cleanup, not for
+    routine rebalance/take-profit signals.
+    """
+    if os.getenv("BUY_LOW_SELL_HIGH_POLICY", "YES").upper() != "YES":
+        return True, ""
+    strategy=str(signal.get("strategy","")).upper()
+    if strategy == "DUST_SWEEP":
+        return True, ""
+    if pstate.get("stop_loss"):
+        return os.getenv("ALLOW_DEFENSIVE_STOP_SELLS", "YES").upper() == "YES", "stop defensivo deshabilitado"
+    if pstate.get("profit_ok"):
+        return True, ""
+    if not pstate.get("known"):
+        if os.getenv("ALLOW_SELL_WITH_UNKNOWN_COST", "NO").upper() == "YES" and (overweight or above_target):
+            return True, ""
+        return False, f"{symbol} costo promedio desconocido; no se vende sin confirmar ganancia"
+    if (overweight or above_target) and os.getenv("ALLOW_REBALANCE_SELLS_WITHOUT_PROFIT", "NO").upper() == "YES":
+        return True, ""
+    profit_pct=float(pstate.get("profit_pct",0.0) or 0.0)
+    min_profit=env_float("MIN_PROFIT_TO_SELL_PCT","0.04")
+    return False, f"{symbol} venta bloqueada: profit {profit_pct*100:.2f}% menor a minimo {min_profit*100:.2f}%"
+
+def buy_low_policy_allowed(symbol, market, signal):
+    """Avoid chasing high short-term pumps unless confidence/trend justify it."""
+    if os.getenv("BUY_LOW_SELL_HIGH_POLICY", "YES").upper() != "YES":
+        return True, ""
+    try:
+        d=float(market.get("change_24h",0) or 0)
+    except (TypeError, ValueError):
+        d=0.0
+    try:
+        w=float(market.get("change_1w",0) or 0)
+    except (TypeError, ValueError):
+        w=0.0
+    confidence=confidence_value(signal.get("confidence",0.0), 0.0)
+    max_24h=env_float("BUY_MAX_24H_CHASE_PCT","2.5")
+    breakout_conf=env_float("BUY_BREAKOUT_MIN_CONFIDENCE","0.82")
+    if d >= max_24h and not (w > 0 and confidence >= breakout_conf):
+        return False, f"{symbol} compra bloqueada: subida 24h {d:.2f}% >= {max_24h:.2f}%; evitar comprar alto"
+    if d > 0.8 and w < -1.0:
+        return False, f"{symbol} compra bloqueada: rebote corto contra tendencia semanal {w:.2f}%"
+    return True, ""
+
 def normalize_ai_opportunity(op):
     if not isinstance(op, dict):
         return {"action":"HOLD","confidence":0.0,"reason":"respuesta IA invalida"}
@@ -646,6 +693,10 @@ def pick_signal(opps, items, perf=None, adaptive=None):
             if pstate["known"] and not (pstate["profit_ok"] or pstate["stop_loss"] or overweight or above_target or strong_sell_override_allowed(signal, market, asset, pstate, overweight, above_target)):
                 log_event("profit_gate_block", symbol=symbol, reason="venta sin ganancia minima, sobrepeso ni stop-loss", profit_state=pstate)
                 continue
+            sell_policy_ok, sell_policy_reason=sell_high_policy_allowed(symbol, signal, market, asset, pstate, overweight, above_target)
+            if not sell_policy_ok:
+                log_event("sell_high_policy_block", symbol=symbol, action="SELL", reason=sell_policy_reason, signal=signal, profit_state=pstate, allocation={"overweight":overweight,"above_target":above_target})
+                continue
             sell_fraction=float(os.getenv("SELL_FRACTION","0.5"))
             if symbol == "BTC":
                 reserved_btc=held["amount"]*reserve_ratio()
@@ -714,6 +765,10 @@ def pick_signal(opps, items, perf=None, adaptive=None):
         signal=calibrated(candidate, items[symbol])
         signal["trend_score"]=round(trend_score(items[symbol]),4)
         signal["reason"] += f"; ranking tendencia {signal['trend_score']}"
+        buy_policy_ok, buy_policy_reason=buy_low_policy_allowed(symbol, items[symbol], signal)
+        if not buy_policy_ok:
+            log_event("buy_low_policy_block", symbol=symbol, action="BUY", reason=buy_policy_reason, signal=signal, market=items[symbol])
+            continue
         if adaptive.get("halted"):
             log_event("adaptive_buy_block", symbol=symbol, action="BUY", reason="adaptive_halt", adaptive=adaptive)
             continue
