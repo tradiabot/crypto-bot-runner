@@ -716,6 +716,11 @@ def pick_signal(opps, items, perf=None, adaptive=None):
     conditional_symbol, conditional_signal, conditional_amount=pick_conditional_order(items, snapshot)
     if conditional_symbol and conditional_signal and conditional_amount > 0:
         return conditional_symbol, conditional_signal, conditional_amount
+    autopilot_mode=str(os.getenv("TRADING_AUTOPILOT_MODE","SEMI")).upper().strip()
+    if autopilot_mode not in {"AUTO","AUTOMATIC","PILOT"}:
+        reason="modo semiautomatico: IA/supervisor propone, pero solo se ejecutan ordenes condicionadas aceptadas en la app"
+        log_event("semiauto_hold", reason=reason, active_conditional_orders=len(configured_conditional_orders()))
+        return None, {"action":"HOLD","confidence":0.0,"strategy":"SEMI_AUTO","reason":reason,"source":"USDC"}, 0.0
     avoid=set(perf.get("avoid_rebuy_symbols", []))
     opps=[normalize_ai_opportunity(x) for x in opps]
     trendy=[]
