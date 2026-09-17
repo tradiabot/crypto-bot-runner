@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json, os, signal as process_signal, subprocess, tempfile, time
+import urllib.error, urllib.request
 import fcntl
 from datetime import datetime, timezone
 from exchange_adapter import quote_buy, quote_sell, quote_exchange, confirm, available, selected as selected_exchange, universe as exchange_universe, available_balances as account_balances
@@ -647,6 +648,36 @@ def configured_conditional_orders():
         return []
     return data if isinstance(data, list) else []
 
+def cloud_execution_mode_allows(signal):
+    """Re-read Cloudflare authority immediately before a real order.
+
+    A cycle can spend a few seconds calling the model.  This final check makes
+    a SEMI/AUTO change effective even if it happened after the cycle started.
+    Local runs have no Cloudflare URL and retain their existing behavior.
+    """
+    url=os.getenv("CLOUDFLARE_API_URL", "").rstrip("/")
+    token=os.getenv("RUNNER_TOKEN") or os.getenv("CLOUDFLARE_RUNNER_TOKEN")
+    if not url:
+        return True, "local_execution_boundary"
+    if not token:
+        return False, "cloud authority unavailable: runner token missing"
+    try:
+        request=urllib.request.Request(
+            f"{url}/api/v1/runner/next",
+            headers={"Accept":"application/json", "Authorization":f"Bearer {token}", "User-Agent":"crypto-bot-execution-check"},
+        )
+        with urllib.request.urlopen(request, timeout=12) as response:
+            data=json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+        return False, f"cloud authority check failed: {exc}"
+    if not isinstance(data, dict) or data.get("desired_state") != "running":
+        return False, "cloud motor is not running"
+    mode=str(data.get("execution_mode", "semi")).lower()
+    is_accepted_conditional=signal.get("origin") == "conditional_order" and bool(signal.get("conditional_order_id"))
+    if mode == "auto" or is_accepted_conditional:
+        return True, f"cloud mode {mode}"
+    return False, "modo semiautomatico: señal IA requiere aceptación como orden condicionada"
+
 def pick_conditional_order(items, snapshot):
     orders=configured_conditional_orders()
     if not orders:
@@ -1112,6 +1143,11 @@ def main():
     if require_ai and (ai_error or ai_partial_error or not remote_ai_ok):
         print('AUTO: bloqueo final de seguridad: IA fallida, no se cotiza ni confirma orden')
         log_event('ai_final_execution_block', symbol=symbol, amount=amount, signal=signal)
+        return
+    mode_allowed, mode_reason=cloud_execution_mode_allows(signal)
+    if not mode_allowed:
+        print(f"AUTO: ejecución bloqueada por autoridad actual: {mode_reason}")
+        log_event('execution_mode_block', symbol=symbol, amount=amount, signal=signal, reason=mode_reason)
         return
     execution_lock = acquire_execution_lock()
     if execution_lock is None:
