@@ -13,6 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 RUNTIME = ROOT / ".runtime"
 LOG_PATH = RUNTIME / "crypto-bot.log"
+COST_BASIS_PATH = RUNTIME / "cost_basis.json"
 
 SECRET_KEYS = {
     "CDC_API_KEY",
@@ -156,6 +157,50 @@ def apply_runtime_env(next_job):
         os.environ[str(key)] = str(value)
 
 
+def _write_json_atomic(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+
+
+def hydrate_cost_basis(next_job):
+    """Restore accounting state sent by the Cloudflare control plane."""
+    config = next_job.get("config") if isinstance(next_job, dict) else {}
+    raw = config.get("COST_BASIS_STATE_JSON", "") if isinstance(config, dict) else ""
+    if not raw:
+        return False
+    try:
+        state = json.loads(raw)
+        if not isinstance(state, dict) or not isinstance(state.get("positions", {}), dict):
+            return False
+        _write_json_atomic(COST_BASIS_PATH, state)
+        return True
+    except (TypeError, ValueError, OSError):
+        return False
+
+
+def sync_cost_basis():
+    """Import recent Crypto.com history and persist a safe accounting snapshot."""
+    if os.getenv("COST_BASIS_SYNC", "YES").upper() != "YES":
+        return
+    started = time.time()
+    try:
+        proc = subprocess.run(
+            [sys.executable, "sync_cost_basis.py"], cwd=ROOT, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=70, check=False,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stdout[-500:] or f"exit_{proc.returncode}")
+        state = json.loads(COST_BASIS_PATH.read_text(encoding="utf-8")) if COST_BASIS_PATH.exists() else {}
+        positions = state.get("positions", {}) if isinstance(state, dict) else {}
+        from bot_logger import log_event
+        log_event("cost_basis_synced", state={"positions": positions, "updated_at": state.get("updated_at", time.time())}, duration_seconds=round(time.time() - started, 2))
+    except Exception as exc:
+        from bot_logger import log_event
+        log_event("cost_basis_sync_error", error=str(exc)[:500], duration_seconds=round(time.time() - started, 2))
+
+
 def run_cycle(timeout: int):
     started = time.time()
     proc = subprocess.run(
@@ -210,6 +255,8 @@ def main():
     apply_runtime_env(next_job)
     seed_local_feedback()
     since = time.time()
+    hydrate_cost_basis(next_job)
+    sync_cost_basis()
     try:
         returncode, output, duration = run_cycle(args.timeout)
         status = "ok" if returncode == 0 else "error"

@@ -6,7 +6,9 @@ from cost_basis import load_cost_basis, save_cost_basis, apply_trade, seed_posit
 from exchange_adapter import balance
 
 ROOT=Path(__file__).resolve().parent
-SKILL='/root/.agents/skills/crypto-com-app/scripts'
+# The repository carries the signed Crypto.com client used by the runner.
+# Fall back to the development skill path only when explicitly configured.
+SKILL=os.getenv('CRYPTO_COM_SKILL_SCRIPTS', str(ROOT/'crypto_com_skill'/'scripts'))
 
 def f(v):
     try:
