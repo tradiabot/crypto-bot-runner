@@ -648,6 +648,59 @@ def configured_conditional_orders():
         return []
     return data if isinstance(data, list) else []
 
+def configured_force_sell_once():
+    raw=os.getenv("FORCE_SELL_ONCE_JSON","").strip()
+    if not raw:
+        return None
+    try:
+        data=json.loads(raw)
+    except json.JSONDecodeError as exc:
+        log_event("force_sell_config_error", error=str(exc))
+        return None
+    if not isinstance(data, dict):
+        return None
+    symbol=str(data.get("symbol","")).upper().strip()
+    if not symbol:
+        return None
+    return data
+
+def pick_force_sell_once(items, snapshot):
+    force=configured_force_sell_once()
+    if not force:
+        return None, None, 0.0
+    symbol=str(force.get("symbol","")).upper().strip()
+    if symbol not in items:
+        log_event("force_sell_block", symbol=symbol, reason="symbol_not_in_market")
+        return None, None, 0.0
+    try:
+        value_usd=float(force.get("value_usd",0) or 0)
+        price=float(items.get(symbol,{}).get("price_usd",0) or 0)
+    except (TypeError, ValueError):
+        value_usd=0.0
+        price=0.0
+    held=snapshot.get("assets",{}).get(symbol,{"amount":0.0,"native_usd":0.0})
+    if price <= 0 or value_usd <= 0 or held.get("amount",0.0) <= 0:
+        log_event("force_sell_block", symbol=symbol, value_usd=value_usd, price_usd=price, reason="invalid_price_amount_or_balance")
+        return None, None, 0.0
+    amount=min(float(held.get("amount",0.0) or 0.0), value_usd / price)
+    if amount <= 0:
+        log_event("force_sell_block", symbol=symbol, value_usd=value_usd, reason="amount_zero")
+        return None, None, 0.0
+    pstate=profit_state(symbol, items.get(symbol,{}), decision_context(), snapshot)
+    signal={
+        "action":"SELL",
+        "confidence":1.0,
+        "strategy":"FORCED_LOSS_SELL",
+        "origin":"user_authorized_force_sell",
+        "reason":str(force.get("reason") or f"venta forzada autorizada por usuario para {symbol} por USD {value_usd:.2f}, aunque exista perdida"),
+        "source":symbol,
+        "force_sell_once_id":str(force.get("id","")),
+        "profit_state":pstate,
+        "allow_loss_sell":True,
+    }
+    log_event("force_sell_candidate", symbol=symbol, amount=amount, value_usd=value_usd, signal=signal)
+    return symbol, signal, amount
+
 def cloud_execution_mode_allows(signal):
     """Re-read Cloudflare authority immediately before a real order.
 
@@ -744,6 +797,9 @@ def pick_signal(opps, items, perf=None, adaptive=None):
     snapshot=portfolio_snapshot(items)
     items.update(include_held_assets(items, snapshot))
     log_event("portfolio_snapshot", total_usd=snapshot.get("total_usd",0.0), assets=snapshot.get("assets",{}))
+    force_symbol, force_signal, force_amount=pick_force_sell_once(items, snapshot)
+    if force_symbol and force_signal and force_amount > 0:
+        return force_symbol, force_signal, force_amount
     conditional_symbol, conditional_signal, conditional_amount=pick_conditional_order(items, snapshot)
     if conditional_symbol and conditional_signal and conditional_amount > 0:
         return conditional_symbol, conditional_signal, conditional_amount
@@ -1140,7 +1196,8 @@ def main():
         print('AUTO: aprobado y armado; sin ejecución.')
         log_event('armed_no_execution', symbol=symbol, amount=amount, signal=signal)
         return
-    if require_ai and (ai_error or ai_partial_error or not remote_ai_ok):
+    force_loss_sell=signal.get("strategy")=="FORCED_LOSS_SELL" and signal.get("allow_loss_sell")
+    if require_ai and not force_loss_sell and (ai_error or ai_partial_error or not remote_ai_ok):
         print('AUTO: bloqueo final de seguridad: IA fallida, no se cotiza ni confirma orden')
         log_event('ai_final_execution_block', symbol=symbol, amount=amount, signal=signal)
         return
@@ -1174,6 +1231,8 @@ def main():
             return 0
         print(json.dumps(safe_result,indent=2))
         log_event("trade_executed", symbol=symbol, amount=amount, signal=signal, result=safe_result)
+        if signal.get("strategy") == "FORCED_LOSS_SELL":
+            log_event("forced_loss_sell_executed", force_sell_once_id=signal.get("force_sell_once_id"), symbol=symbol, amount=amount, signal=signal, result=safe_result)
         if signal.get("strategy") == "CONDITIONAL_ORDER" and signal.get("conditional_order_id"):
             log_event("conditional_order_executed", conditional_order_id=signal.get("conditional_order_id"), symbol=symbol, amount=amount, signal=signal, result=safe_result)
         try:
