@@ -689,7 +689,7 @@ def pick_force_sell_once(items, snapshot):
     pstate=profit_state(symbol, items.get(symbol,{}), decision_context(), snapshot)
     signal={
         "action":"SELL",
-        "confidence":1.0,
+        "confidence":0.95,
         "strategy":"FORCED_LOSS_SELL",
         "origin":"user_authorized_force_sell",
         "reason":str(force.get("reason") or f"venta forzada autorizada por usuario para {symbol} por USD {value_usd:.2f}, aunque exista perdida"),

@@ -21,6 +21,11 @@ def validate(signal, market, amount, daily_loss=0.0):
     action = signal.get("action")
     source = signal.get("source", "USDC")
     confidence = signal.get("confidence")
+    forced_loss_sell = (
+        action == "SELL"
+        and signal.get("strategy") == "FORCED_LOSS_SELL"
+        and bool(signal.get("allow_loss_sell"))
+    )
     price = _price(market)
     if action == "BUY" and source in {"USDC", "USDT"}:
         trade_value_usd = float(amount or 0)
@@ -46,7 +51,7 @@ def validate(signal, market, amount, daily_loss=0.0):
     max_daily_loss_usdc = env_float("MAX_DAILY_LOSS_USDC", "1")
     if action == "BUY" and source in {"USDC", "USDT"} and amount < min_trade_usdc: errors.append("trade_below_minimum_cost_guard")
     if action == "BUY" and source in {"USDC", "USDT"} and amount > max_trade_usdc: errors.append("trade_limit_exceeded")
-    if action == "SELL" and trade_value_usd < min_sell_native_usd: errors.append("sell_below_minimum_cost_guard")
+    if action == "SELL" and trade_value_usd < min_sell_native_usd and not forced_loss_sell: errors.append("sell_below_minimum_cost_guard")
     if action == "SELL" and trade_value_usd > max_sell_native_usd: errors.append("sell_limit_exceeded")
     if action == "BUY" and daily_loss >= max_daily_loss_usdc: errors.append("daily_loss_limit")
     return {"approved": not errors, "errors": errors, "trade_value_usd": trade_value_usd, "limits": {"max_trade_usdc": max_trade_usdc, "min_trade_usdc": min_trade_usdc, "max_sell_native_usd": max_sell_native_usd, "min_sell_native_usd": min_sell_native_usd, "max_daily_loss_usdc": max_daily_loss_usdc}}
