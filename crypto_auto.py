@@ -1216,7 +1216,11 @@ def main():
         log_event('risk_gate_block', symbol=symbol, amount=amount, signal=signal, risk_gate=gate)
         return
     risk_reducing_sell=(signal.get("action")=="SELL" and adaptive.get("allow_risk_reducing_sells") and (signal.get("strategy")=="REBALANCE" or signal.get("profit_state",{}).get("stop_loss")))
-    if frequency_blocked and not risk_reducing_sell:
+    app_authorized_order=(
+        signal.get("strategy")=="FORCED_LOSS_SELL"
+        or (signal.get("origin")=="conditional_order" and bool(signal.get("conditional_order_id")))
+    )
+    if frequency_blocked and not risk_reducing_sell and not app_authorized_order:
         print('AUTO: senal evaluada; ejecucion bloqueada por cooldown/frecuencia')
         log_event('frequency_execution_block', symbol=symbol, amount=amount, signal=signal, risk_gate=gate, frequency_gate=freq)
         return
@@ -1229,7 +1233,7 @@ def main():
         log_event('armed_no_execution', symbol=symbol, amount=amount, signal=signal)
         return
     force_loss_sell=signal.get("strategy")=="FORCED_LOSS_SELL" and signal.get("allow_loss_sell")
-    if require_ai and not force_loss_sell and (ai_error or ai_partial_error or not remote_ai_ok):
+    if require_ai and not (force_loss_sell or app_authorized_order) and (ai_error or ai_partial_error or not remote_ai_ok):
         print('AUTO: bloqueo final de seguridad: IA fallida, no se cotiza ni confirma orden')
         log_event('ai_final_execution_block', symbol=symbol, amount=amount, signal=signal)
         return
