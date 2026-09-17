@@ -636,12 +636,86 @@ def pick_dust_sweep(snapshot):
     log_event("dust_sweep_candidate", symbol=symbol, amount=amount, value_usd=value, signal=signal)
     return symbol, signal, amount
 
+def configured_conditional_orders():
+    raw=os.getenv("CONDITIONAL_ORDERS_JSON","").strip()
+    if not raw:
+        return []
+    try:
+        data=json.loads(raw)
+    except json.JSONDecodeError as exc:
+        log_event("conditional_order_config_error", error=str(exc))
+        return []
+    return data if isinstance(data, list) else []
+
+def pick_conditional_order(items, snapshot):
+    orders=configured_conditional_orders()
+    if not orders:
+        return None, None, 0.0
+    for order in orders:
+        if not isinstance(order, dict):
+            continue
+        order_id=str(order.get("id","")).strip()
+        symbol=str(order.get("symbol","")).upper().strip()
+        side=str(order.get("side","")).upper().strip()
+        if not order_id or symbol not in items or side not in {"BUY","SELL"}:
+            continue
+        market=items.get(symbol,{})
+        try:
+            price=float(market.get("price_usd",0) or 0)
+            trigger=float(order.get("trigger_price_usd",0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if price <= 0 or trigger <= 0:
+            continue
+        touched=(side=="BUY" and price <= trigger) or (side=="SELL" and price >= trigger)
+        if not touched:
+            log_event("conditional_order_watch", conditional_order_id=order_id, symbol=symbol, side=side, price_usd=price, trigger_price_usd=trigger)
+            continue
+        blocked, block_reason=recent_trade_block(symbol, side)
+        if blocked:
+            log_event("conditional_order_block", conditional_order_id=order_id, symbol=symbol, side=side, reason=block_reason)
+            continue
+        if side=="BUY":
+            amount=float(order.get("amount_usdc",0) or 0)
+            if amount <= 0:
+                continue
+            free=free_usdc_amount()
+            if amount > free:
+                log_event("conditional_order_block", conditional_order_id=order_id, symbol=symbol, side=side, reason=f"USDC libre insuficiente {free:.2f} < orden {amount:.2f}")
+                continue
+            allowed, reason=buy_allowed(symbol, snapshot)
+            if not allowed:
+                log_event("conditional_order_block", conditional_order_id=order_id, symbol=symbol, side=side, reason=reason)
+                continue
+            signal={"action":"BUY","confidence":0.91,"strategy":"CONDITIONAL_ORDER","reason":f"orden condicionada {order_id}: precio {price:.8g} <= trigger {trigger:.8g}","source":"USDC","origin":"conditional_order","conditional_order_id":order_id}
+            return symbol, signal, amount
+        held=snapshot.get("assets",{}).get(symbol,{"amount":0.0,"native_usd":0.0})
+        value_usd=float(order.get("value_usd",0) or 0)
+        if value_usd <= 0 or held.get("native_usd",0.0) <= 0:
+            continue
+        amount=min(float(held.get("amount",0.0) or 0.0), value_usd / price)
+        asset=snapshot.get("assets",{}).get(symbol,{})
+        pstate=profit_state(symbol, market, decision_context(), snapshot)
+        target_weight=asset.get("target_weight", asset_target_weight(symbol))
+        overweight=asset.get("weight",0.0) > asset.get("max_weight",asset_max_weight(symbol))
+        above_target=asset.get("weight",0.0) > target_weight
+        signal={"action":"SELL","confidence":0.91,"strategy":"CONDITIONAL_ORDER","reason":f"orden condicionada {order_id}: precio {price:.8g} >= trigger {trigger:.8g}","source":symbol,"origin":"conditional_order","conditional_order_id":order_id,"profit_state":pstate}
+        ok, reason=sell_high_policy_allowed(symbol, signal, market, asset, pstate, overweight, above_target)
+        if not ok:
+            log_event("conditional_order_block", conditional_order_id=order_id, symbol=symbol, side=side, reason=reason, profit_state=pstate)
+            continue
+        return symbol, signal, amount
+    return None, None, 0.0
+
 def pick_signal(opps, items, perf=None, adaptive=None):
     perf=perf or {}
     adaptive=adaptive or adaptive_status()
     snapshot=portfolio_snapshot(items)
     items.update(include_held_assets(items, snapshot))
     log_event("portfolio_snapshot", total_usd=snapshot.get("total_usd",0.0), assets=snapshot.get("assets",{}))
+    conditional_symbol, conditional_signal, conditional_amount=pick_conditional_order(items, snapshot)
+    if conditional_symbol and conditional_signal and conditional_amount > 0:
+        return conditional_symbol, conditional_signal, conditional_amount
     avoid=set(perf.get("avoid_rebuy_symbols", []))
     opps=[normalize_ai_opportunity(x) for x in opps]
     trendy=[]
@@ -1059,6 +1133,8 @@ def main():
             return 0
         print(json.dumps(safe_result,indent=2))
         log_event("trade_executed", symbol=symbol, amount=amount, signal=signal, result=safe_result)
+        if signal.get("strategy") == "CONDITIONAL_ORDER" and signal.get("conditional_order_id"):
+            log_event("conditional_order_executed", conditional_order_id=signal.get("conditional_order_id"), symbol=symbol, amount=amount, signal=signal, result=safe_result)
         try:
             record_cost_basis(result)
         except Exception as exc:
