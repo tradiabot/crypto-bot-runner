@@ -791,9 +791,15 @@ def pick_conditional_order(items, snapshot):
         return symbol, signal, amount
     return None, None, 0.0
 
-def pick_signal(opps, items, perf=None, adaptive=None):
-    perf=perf or {}
-    adaptive=adaptive or adaptive_status()
+def pick_authorized_order(items):
+    """Return only app-authorized execution candidates.
+
+    These are not free-form AI trades: they are either a one-shot forced sell
+    explicitly approved by the user or an active conditional order already
+    accepted in the app.  Keeping this separate lets those orders remain live
+    even when the AI provider has a temporary error, while the normal AI
+    autopilot stays fail-closed.
+    """
     snapshot=portfolio_snapshot(items)
     items.update(include_held_assets(items, snapshot))
     log_event("portfolio_snapshot", total_usd=snapshot.get("total_usd",0.0), assets=snapshot.get("assets",{}))
@@ -803,6 +809,15 @@ def pick_signal(opps, items, perf=None, adaptive=None):
     conditional_symbol, conditional_signal, conditional_amount=pick_conditional_order(items, snapshot)
     if conditional_symbol and conditional_signal and conditional_amount > 0:
         return conditional_symbol, conditional_signal, conditional_amount
+    return None, None, 0.0
+
+def pick_signal(opps, items, perf=None, adaptive=None):
+    perf=perf or {}
+    adaptive=adaptive or adaptive_status()
+    authorized_symbol, authorized_signal, authorized_amount=pick_authorized_order(items)
+    if authorized_symbol and authorized_signal and authorized_amount > 0:
+        return authorized_symbol, authorized_signal, authorized_amount
+    snapshot=portfolio_snapshot(items)
     autopilot_mode=str(os.getenv("TRADING_AUTOPILOT_MODE","SEMI")).upper().strip()
     if autopilot_mode not in {"AUTO","AUTOMATIC","PILOT"}:
         reason="modo semiautomatico: IA/supervisor propone, pero solo se ejecutan ordenes condicionadas aceptadas en la app"
@@ -1092,6 +1107,9 @@ def main():
     print_ai_response(report)
     log_event("ai_response", ai=report.get('ai',{}), universe=report.get('universe',[]))
     ai_data=report.get('ai',{}) if isinstance(report.get('ai'),dict) else {}
+    items={x.get('symbol'):x for x in report.get('universe',[]) if x.get('symbol')}
+    opps=report.get('ai',{}).get('opportunities',[])
+    preselected_authorized=None
     ai_error=bool(ai_data.get('error'))
     ai_partial_error=bool(ai_data.get('partial_errors'))
     require_ai=os.getenv("REQUIRE_AI_FOR_EXECUTION","YES").upper()=="YES"
@@ -1118,7 +1136,19 @@ def main():
             require_ai=require_ai,
             ai=ai_data,
         )
-        return 0
+        authorized_symbol, authorized_signal, authorized_amount=pick_authorized_order(items)
+        if authorized_symbol and authorized_signal and authorized_amount > 0:
+            preselected_authorized=(authorized_symbol, authorized_signal, authorized_amount)
+            print("AUTO: IA falló, pero se mantiene orden autorizada por app bajo risk-gate")
+            log_event(
+                "ai_execution_block_bypassed_for_authorized_order",
+                reason=block_reason,
+                symbol=authorized_symbol,
+                amount=authorized_amount,
+                signal=authorized_signal,
+            )
+        else:
+            return 0
     for opportunity in ai_data.get("opportunities", []):
         if isinstance(opportunity, dict):
             opportunity["origin"] = provider_used or "unknown"
@@ -1131,7 +1161,6 @@ def main():
             log_event("universe_autopilot", recommendation=universe_recommendation, applied=applied)
             if applied.get("applied"):
                 print(f"AUTO: universo actualizado · include={applied.get('trade_include','')} exclude={applied.get('trade_exclude','')}")
-    items={x.get('symbol'):x for x in report.get('universe',[]) if x.get('symbol')}; opps=report.get('ai',{}).get('opportunities',[])
     try:
         cap=capital_status()
         print(f"CAPITAL USDC: total={cap['total']:.4f} reserva={cap['reserved']:.4f} libre={cap['free']:.4f} ({cap['reserve_ratio']*100:.0f}%)")
@@ -1139,7 +1168,10 @@ def main():
     except Exception as exc:
         print(f"CAPITAL USDC: no disponible ({exc})")
         log_event("capital_status_error", error=str(exc))
-    symbol, signal, amount = pick_signal(opps, items, perf, adaptive)
+    if preselected_authorized:
+        symbol, signal, amount = preselected_authorized
+    else:
+        symbol, signal, amount = pick_signal(opps, items, perf, adaptive)
     # pick_signal refreshes/logs the portfolio snapshot. Recalculate risk from
     # that fresh equity before any decision can reach the exchange.
     adaptive=adaptive_status()
