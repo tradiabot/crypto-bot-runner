@@ -259,11 +259,24 @@ def portfolio_snapshot(items):
         data["min_weight"]=asset_min_weight(symbol)
     return {"total_usd":total,"assets":assets}
 
+def held_stable_excluded():
+    """Stablecoins kept out of `items`.
+
+    USDC is the funding currency and must never be sellable. USDT is excluded
+    by default too, but it can be released via HELD_STABLE_EXCLUDE so a held
+    USDT balance becomes eligible for conditional orders (e.g. USDT_USD) and
+    stops being dead capital. AI-driven sells still skip it further down.
+    """
+    raw=os.getenv("HELD_STABLE_EXCLUDE", "USDC,USDT")
+    return {x.strip().upper() for x in raw.split(",") if x.strip()} or {"USDC"}
+
+
 def include_held_assets(items, snapshot):
     """Keep held assets eligible for risk-reducing sells when scans omit them."""
     merged=dict(items)
+    excluded=held_stable_excluded()
     for symbol, asset in snapshot.get("assets", {}).items():
-        if symbol in {"USDC", "USDT"} or symbol in merged:
+        if symbol in excluded or symbol in merged:
             continue
         amount=float(asset.get("amount", 0.0) or 0.0)
         native_usd=float(asset.get("native_usd", 0.0) or 0.0)
