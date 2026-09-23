@@ -205,6 +205,42 @@ def env_float(name, default):
     except (TypeError, ValueError):
         return float(default)
 
+def env_pct_map(name):
+    """Lee 'BTC:0.042,ETH:0.054' como {'BTC': 0.042, 'ETH': 0.054}."""
+    out={}
+    for parte in (os.getenv(name,"") or "").split(","):
+        parte=parte.strip()
+        if not parte or ":" not in parte:
+            continue
+        sym,_,val=parte.partition(":")
+        try:
+            out[sym.strip().upper()]=float(val)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+def risk_levels_for(symbol):
+    """Objetivo y stop del activo, en fraccion (0.042 = 4.2%).
+
+    Un stop fijo igual para todos se dispara dentro del ruido de un solo dia:
+    el rango diario medio de BTC es ~3.5% y el de POL ~6.7%, asi que un 3%
+    global vende POL por fluctuacion normal antes de que la tesis se cumpla.
+    El worker mide el rango real de cada moneda y manda estos mapas; si no
+    llegan, se cae al valor global de siempre.
+    """
+    sym=(symbol or "").strip().upper()
+    stop=env_pct_map("STOP_LOSS_PCT_BY_ASSET").get(sym)
+    prof=env_pct_map("MIN_PROFIT_TO_SELL_PCT_BY_ASSET").get(sym)
+    if stop is None:
+        stop=env_float("STOP_LOSS_PCT","0.04")
+    if prof is None:
+        prof=env_float("MIN_PROFIT_TO_SELL_PCT","0.015")
+    # Topes de cordura: un mapa mal formado no debe poder desactivar el stop
+    # ni exigir una ganancia inalcanzable.
+    stop=min(max(stop,0.02),0.20)
+    prof=min(max(prof,0.005),0.30)
+    return prof, stop
+
 def configured_universe():
     items=list(exchange_universe())
     base=["USDC","BTC","ETH","CRO"]
@@ -332,8 +368,7 @@ def price_for(symbol, market, snapshot):
 def profit_state(symbol, market, perf, snapshot):
     price=price_for(symbol, market, snapshot)
     avg=avg_cost_for(symbol, perf)
-    min_profit=env_float("MIN_PROFIT_TO_SELL_PCT","0.015")
-    stop_loss=env_float("STOP_LOSS_PCT","0.04")
+    min_profit, stop_loss = risk_levels_for(symbol)
     if avg <= 0 or price <= 0:
         return {"known":False,"estimated":False,"source":"unknown","price":price,"avg_cost":avg,"profit_pct":0.0,"profit_ok":False,"stop_loss":False}
     pct=(price-avg)/avg
@@ -476,7 +511,7 @@ def sell_high_policy_allowed(symbol, signal, market, asset, pstate, overweight, 
     if (overweight or above_target) and os.getenv("ALLOW_REBALANCE_SELLS_WITHOUT_PROFIT", "NO").upper() == "YES":
         return True, ""
     profit_pct=float(pstate.get("profit_pct",0.0) or 0.0)
-    min_profit=env_float("MIN_PROFIT_TO_SELL_PCT","0.04")
+    min_profit, _stop = risk_levels_for(symbol)
     return False, f"{symbol} venta bloqueada: profit {profit_pct*100:.2f}% menor a minimo {min_profit*100:.2f}%"
 
 def buy_low_policy_allowed(symbol, market, signal):
