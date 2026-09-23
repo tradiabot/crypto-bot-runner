@@ -9,6 +9,21 @@ def env_float(name, default):
         return float(default)
 
 
+def stables_protegidas():
+    """Stablecoins que nunca se pueden vender.
+
+    USDC es la moneda de financiacion y queda protegida siempre. USDT solo
+    estaba protegido por una lista fija que contradecia a HELD_STABLE_EXCLUDE:
+    ese interruptor libera el USDT para ordenes condicionadas, pero la orden
+    se disparaba y aqui moria con 'invalid_source', dejando el saldo inmovil.
+    Ahora ambos leen la misma fuente.
+    """
+    crudo = os.getenv("HELD_STABLE_EXCLUDE", "USDC,USDT")
+    prot = {x.strip().upper() for x in crudo.split(",") if x.strip()} or {"USDC"}
+    prot.add("USDC")
+    return prot
+
+
 def _price(market):
     try:
         return float(market.get("price_usd", 0) or 0)
@@ -42,7 +57,7 @@ def validate(signal, market, amount, daily_loss=0.0):
     if action in {"BUY", "SELL"} and str(market.get("tradable", "false")).lower() != "true": errors.append("asset_not_tradable")
     if action in {"BUY", "SELL"} and price <= 0: errors.append("invalid_price")
     if action == "BUY" and source not in {"USDC", "USDT", "BTC"}: errors.append("invalid_source")
-    if action == "SELL" and source in {"USDC", "USDT"}: errors.append("invalid_source")
+    if action == "SELL" and source in stables_protegidas(): errors.append("invalid_source")
     if amount <= 0: errors.append("invalid_amount")
     max_trade_usdc = env_float("MAX_TRADE_USDC", "8")
     min_trade_usdc = env_float("MIN_TRADE_USDC", "5")
