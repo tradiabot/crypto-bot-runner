@@ -828,6 +828,14 @@ def pick_conditional_order(items, snapshot):
         amount=min(float(held.get("amount",0.0) or 0.0), value_usd / price)
         asset=snapshot.get("assets",{}).get(symbol,{})
         pstate=profit_state(symbol, market, decision_context(), snapshot)
+        if order_id.startswith("grid-"):
+            # Un grid cosecha oscilaciones de horas. Exigirle el objetivo de la
+            # tesis larga (dimensionado a varios dias de rango) lo deja comprando
+            # en cada caida sin poder vender nunca: solo saldria por stop.
+            # Su minimo propio solo tiene que cubrir el coste de ida y vuelta.
+            grid_min=env_float("GRID_MIN_PROFIT_PCT", "0.025")
+            pct=float(pstate.get("profit_pct", 0.0) or 0.0)
+            pstate=dict(pstate, profit_ok=bool(pstate.get("known")) and pct >= grid_min)
         target_weight=asset.get("target_weight", asset_target_weight(symbol))
         overweight=asset.get("weight",0.0) > asset.get("max_weight",asset_max_weight(symbol))
         above_target=asset.get("weight",0.0) > target_weight
