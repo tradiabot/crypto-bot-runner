@@ -514,6 +514,21 @@ def sell_high_policy_allowed(symbol, signal, market, asset, pstate, overweight, 
     min_profit, _stop = risk_levels_for(symbol)
     return False, f"{symbol} venta bloqueada: profit {profit_pct*100:.2f}% menor a minimo {min_profit*100:.2f}%"
 
+def chase_limit_for(symbol):
+    """Subida en 24h a partir de la cual se considera que el activo ya corrio.
+
+    Un limite unico para todos repite el error del stop fijo: 2.5% bloqueaba el
+    20-25% de los dias verdes en BTC/ETH pero el 47-60% en SOL, CRO, POL y LINK,
+    donde 2.5% es un dia normal. El worker manda el percentil 75 de las subidas
+    de cada activo, asi se descarta solo el cuartil alto -un pico de verdad- y
+    no medio mes de dias corrientes. Sin mapa, cae al valor global de siempre.
+    """
+    sym=(symbol or "").strip().upper()
+    lim=env_pct_map("BUY_MAX_24H_CHASE_PCT_BY_ASSET").get(sym)
+    if lim is None:
+        lim=env_float("BUY_MAX_24H_CHASE_PCT","2.5")
+    return min(max(lim, 1.0), 12.0)
+
 def buy_low_policy_allowed(symbol, market, signal):
     """Avoid chasing high short-term pumps unless confidence/trend justify it."""
     if os.getenv("BUY_LOW_SELL_HIGH_POLICY", "YES").upper() != "YES":
@@ -527,7 +542,7 @@ def buy_low_policy_allowed(symbol, market, signal):
     except (TypeError, ValueError):
         w=0.0
     confidence=confidence_value(signal.get("confidence",0.0), 0.0)
-    max_24h=env_float("BUY_MAX_24H_CHASE_PCT","2.5")
+    max_24h=chase_limit_for(symbol)
     breakout_conf=env_float("BUY_BREAKOUT_MIN_CONFIDENCE","0.82")
     if d >= max_24h and not (w > 0 and confidence >= breakout_conf):
         return False, f"{symbol} compra bloqueada: subida 24h {d:.2f}% >= {max_24h:.2f}%; evitar comprar alto"
