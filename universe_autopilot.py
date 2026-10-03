@@ -103,6 +103,11 @@ def recommend(report, perf=None):
     current_include = _split_csv(os.getenv("TRADE_INCLUDE", ""))
     current_exclude = _split_csv(os.getenv("TRADE_EXCLUDE", ""))
     pinned = _split_csv(os.getenv("UNIVERSE_AUTOPILOT_CORE", "BTC,ETH"))
+    # Las monedas incluidas desde el Radar las decide el usuario (o la IA del
+    # Radar): el autopiloto no puede sacarlas por un puntaje bajo de un ciclo.
+    for sym in _split_csv(os.getenv("NO_LOSS_SELL_SYMBOLS", "")):
+        if sym not in pinned:
+            pinned.append(sym)
     keep_current_holdings = _env_flag("UNIVERSE_AUTOPILOT_KEEP_HOLDINGS", "YES")
     max_include = int(os.getenv("UNIVERSE_AUTOPILOT_MAX_INCLUDE", "4") or 4)
     min_score = _float_env("UNIVERSE_AUTOPILOT_MIN_SCORE", "0.05")
