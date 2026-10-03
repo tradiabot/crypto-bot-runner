@@ -365,6 +365,15 @@ def price_for(symbol, market, snapshot):
         price=(held.get("native_usd",0.0)/amt) if amt>0 else 0.0
     return price
 
+def no_loss_symbols():
+    """Monedas que solo se venden con ganancia, sin stop de perdida.
+
+    Las incluye el Radar (manual o IA) y el worker las manda en
+    NO_LOSS_SELL_SYMBOLS: el usuario pidio que esas compras solo se cierren
+    por encima del costo promedio.
+    """
+    return {x.strip().upper() for x in os.getenv("NO_LOSS_SELL_SYMBOLS","").split(",") if x.strip()}
+
 def profit_state(symbol, market, perf, snapshot):
     price=price_for(symbol, market, snapshot)
     avg=avg_cost_for(symbol, perf)
@@ -373,7 +382,7 @@ def profit_state(symbol, market, perf, snapshot):
         return {"known":False,"estimated":False,"source":"unknown","price":price,"avg_cost":avg,"profit_pct":0.0,"profit_ok":False,"stop_loss":False}
     pct=(price-avg)/avg
     meta=cost_basis_meta(symbol, perf)
-    return {"known":True,"estimated":meta.get("estimated",False),"source":meta.get("source","cost_basis"),"price":price,"avg_cost":avg,"profit_pct":pct,"profit_ok":pct>=min_profit,"stop_loss":pct<=-stop_loss}
+    return {"known":True,"estimated":meta.get("estimated",False),"source":meta.get("source","cost_basis"),"price":price,"avg_cost":avg,"profit_pct":pct,"profit_ok":pct>=min_profit,"stop_loss":pct<=-stop_loss and (symbol or "").upper() not in no_loss_symbols()}
 
 def buy_allowed(symbol, snapshot):
     asset=snapshot.get("assets",{}).get(symbol,{})
@@ -500,6 +509,10 @@ def sell_high_policy_allowed(symbol, signal, market, asset, pstate, overweight, 
     strategy=str(signal.get("strategy","")).upper()
     if strategy == "DUST_SWEEP":
         return True, ""
+    # Una orden manual del usuario desde la app (co_) es decision suya y pasa.
+    manual=str(signal.get("conditional_order_id","")).startswith("co_")
+    if (symbol or "").upper() in no_loss_symbols() and not pstate.get("profit_ok") and not manual:
+        return False, f"{symbol} es moneda del Radar: solo se vende con ganancia"
     if pstate.get("stop_loss"):
         return os.getenv("ALLOW_DEFENSIVE_STOP_SELLS", "YES").upper() == "YES", "stop defensivo deshabilitado"
     if pstate.get("profit_ok"):
