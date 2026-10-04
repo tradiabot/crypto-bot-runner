@@ -328,6 +328,10 @@ def ask_groq_model(model, prompt):
    },
   },
  }
+ if model.startswith("llama"):
+  # Llama no admite reasoning_effort ni json_schema estricto: JSON simple.
+  payload.pop("reasoning_effort",None)
+  payload["response_format"]={"type":"json_object"}
  request=urllib.request.Request(
   base_url+"/chat/completions",
   data=json.dumps(payload).encode(),
@@ -423,7 +427,13 @@ def ask_once(items, role=None):
    result["fallback_from"]=errors
    return result
   if provider == "groq":
-   models=[os.getenv("GROQ_MODEL","openai/gpt-oss-20b")]
+   # Si un modelo agota su cuota (429) o falla, se rota al siguiente: cada modelo de
+   # Groq tiene su propio límite, así que el ciclo no se queda en HOLD por uno solo.
+   primary=os.getenv("GROQ_MODEL","qwen/qwen3.8-27b")
+   fallback_raw=os.getenv("GROQ_FALLBACK_MODELS","openai/gpt-oss-120b,qwen/qwen3.8-27b,llama-3.3-70b-versatile")
+   models=[]
+   for model in [primary,*[x.strip() for x in fallback_raw.split(",") if x.strip()]]:
+    if model not in models: models.append(model)
   elif provider == "ollama":
    ok, detail=ensure_server(wait_seconds=20)
    if not ok:
