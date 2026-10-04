@@ -384,6 +384,21 @@ def profit_state(symbol, market, perf, snapshot):
     meta=cost_basis_meta(symbol, perf)
     return {"known":True,"estimated":meta.get("estimated",False),"source":meta.get("source","cost_basis"),"price":price,"avg_cost":avg,"profit_pct":pct,"profit_ok":pct>=min_profit,"stop_loss":pct<=-stop_loss and (symbol or "").upper() not in no_loss_symbols()}
 
+def loss_rebuy_block(symbol, market, snapshot, perf=None):
+    """Regla del usuario: no comprar mas de una moneda mientras esa posicion va en
+    perdida (no promediar a la baja). Sin posicion o sin costo conocido se permite.
+    NO_LOSS_BUYS=NO la desactiva."""
+    if os.getenv("NO_LOSS_BUYS","YES").strip().upper() in {"NO","0","FALSE","OFF"}:
+        return False, ""
+    held=snapshot.get("assets",{}).get(symbol,{})
+    if float(held.get("amount",0.0) or 0.0) <= 0:
+        return False, ""
+    pstate=profit_state(symbol, market, perf if perf is not None else decision_context(), snapshot)
+    pct=float(pstate.get("profit_pct",0.0) or 0.0)
+    if pstate.get("known") and pct < 0:
+        return True, f"{symbol} compra bloqueada: tu posicion va en {pct*100:.2f}% (P/L negativo); no se promedia a la baja"
+    return False, ""
+
 def buy_allowed(symbol, snapshot):
     asset=snapshot.get("assets",{}).get(symbol,{})
     weight=asset.get("weight",0.0)
@@ -854,6 +869,11 @@ def pick_conditional_order(items, snapshot):
             if not allowed:
                 log_event("conditional_order_block", conditional_order_id=order_id, symbol=symbol, side=side, reason=reason)
                 continue
+            if not order_id.startswith("co_"):
+                en_perdida, reason=loss_rebuy_block(symbol, market, snapshot)
+                if en_perdida:
+                    log_event("conditional_order_block", conditional_order_id=order_id, symbol=symbol, side=side, reason=reason)
+                    continue
             signal={"action":"BUY","confidence":0.91,"strategy":"CONDITIONAL_ORDER","reason":f"orden condicionada {order_id}: precio {price:.8g} <= trigger {trigger:.8g}","source":"USDC","origin":"conditional_order","conditional_order_id":order_id}
             return symbol, signal, amount
         held=snapshot.get("assets",{}).get(symbol,{"amount":0.0,"native_usd":0.0})
@@ -1033,6 +1053,10 @@ def pick_signal(opps, items, perf=None, adaptive=None):
         allowed, reason=buy_allowed(symbol, snapshot)
         if not allowed:
             log_event("allocation_block", symbol=symbol, action="BUY", reason=reason)
+            continue
+        en_perdida, reason=loss_rebuy_block(symbol, items[symbol], snapshot, perf)
+        if en_perdida:
+            log_event("loss_rebuy_block", symbol=symbol, action="BUY", reason=reason)
             continue
         signal=calibrated(candidate, items[symbol])
         signal["trend_score"]=round(trend_score(items[symbol]),4)
