@@ -624,8 +624,15 @@ def reserve_pct_text():
 
 def max_base_trade_amount():
     configured=float(os.getenv("MAX_TRADE_USDC","2"))
-    if selected_exchange() == "crypto_com":
-        configured=min(configured, float(os.getenv("CRYPTO_COM_MAX_TRADE_USDC","2")))
+    # El tope propio de Crypto.com solo aplica si se configura. Antes valia 2 por
+    # defecto y, con MIN_TRADE_USDC=3, ninguna compra cabia: el bot quedaba en HOLD
+    # desde el 2026-09-29 sin registrar por que.
+    extra=os.getenv("CRYPTO_COM_MAX_TRADE_USDC","").strip()
+    if selected_exchange() == "crypto_com" and extra:
+        try:
+            configured=min(configured, float(extra))
+        except ValueError:
+            pass
     return configured
 
 def capital_status():
@@ -1045,6 +1052,9 @@ def pick_signal(opps, items, perf=None, adaptive=None):
         if signal["confidence"] >= min_conf and usdc_amount >= min_usdc:
             signal["source"]="USDC"
             return symbol, signal, usdc_amount
+        if usdc_amount < min_usdc:
+            log_event("trade_size_block", symbol=symbol, action="BUY", amount_usdc=round(usdc_amount,4), min_usdc=min_usdc, max_usdc=max_usdc, free_usdc=round(free_usdc,4),
+                      reason=f"monto {usdc_amount:.2f} USDC menor al minimo {min_usdc:.2f} (tope por operacion {max_usdc:.2f}, libre {free_usdc:.2f})")
         if symbol != "BTC":
             rot_ok, rot_reason=btc_rotation_allowed(snapshot)
             if not rot_ok:
