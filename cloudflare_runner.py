@@ -155,6 +155,12 @@ def apply_runtime_env(next_job):
         if key in SECRET_KEYS:
             continue
         os.environ[str(key)] = str(value)
+    # La clave de IA se puede cambiar desde la app: la nube manda la vigente y
+    # tiene prioridad sobre el secreto GROQ_API_KEY del repo (por si no se pudo
+    # actualizar en GitHub).
+    groq = str(config.get("GROQ_API_KEY") or "").strip()
+    if groq:
+        os.environ["GROQ_API_KEY"] = groq
 
 
 def _write_json_atomic(path: Path, data) -> None:
