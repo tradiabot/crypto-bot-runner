@@ -285,11 +285,35 @@ def ask_ollama_model(model, prompt):
     raise
    time.sleep(min(2.0, 0.5 * (attempt + 1)))
 
-def ask_groq_model(model, prompt):
- api_key=os.getenv("GROQ_API_KEY", "").strip()
+def ai_providers():
+ """Proveedores de IA (formato OpenAI) que manda la nube en orden de prioridad:
+ [{id, base_url, key, modelos}]. Si no hay lista, se usa la clave de Groq."""
+ raw=os.getenv("IA_PROVIDERS_SECRET_JSON","").strip()
+ if raw:
+  try:
+   lista=json.loads(raw)
+   lista=[p for p in lista if isinstance(p,dict) and p.get("key") and p.get("base_url") and p.get("modelos")]
+   if lista:
+    return lista
+  except (json.JSONDecodeError, TypeError):
+   pass
+ key=os.getenv("GROQ_API_KEY","").strip()
+ if not key:
+  return []
+ primary=os.getenv("GROQ_MODEL","qwen/qwen3.8-27b")
+ fallback_raw=os.getenv("GROQ_FALLBACK_MODELS","openai/gpt-oss-120b,qwen/qwen3.8-27b,llama-3.3-70b-versatile")
+ modelos=[]
+ for model in [primary,*[x.strip() for x in fallback_raw.split(",") if x.strip()]]:
+  if model not in modelos: modelos.append(model)
+ return [{"id":"groq","base_url":os.getenv("GROQ_BASE_URL","https://api.groq.com/openai/v1"),"key":key,"modelos":modelos}]
+
+def ask_groq_model(model, prompt, provider=None):
+ provider=provider or {}
+ pid=str(provider.get("id") or "groq")
+ api_key=str(provider.get("key") or os.getenv("GROQ_API_KEY", "")).strip()
  if not api_key:
-  raise RuntimeError("GROQ_API_KEY no configurada")
- base_url=os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1").rstrip("/")
+  raise RuntimeError(f"clave de {pid} no configurada")
+ base_url=str(provider.get("base_url") or os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")).rstrip("/")
  payload={
   "model":model,
   "messages":[
@@ -328,10 +352,19 @@ def ask_groq_model(model, prompt):
    },
   },
  }
- if model.startswith("llama"):
+ if pid == "groq" and model.startswith("llama"):
   # Llama no admite reasoning_effort ni json_schema estricto: JSON simple.
   payload.pop("reasoning_effort",None)
   payload["response_format"]={"type":"json_object"}
+ elif pid != "groq":
+  # Otros proveedores gratis: parametros minimos compatibles. El parser tolera
+  # texto con JSON dentro, asi que no se exige json_schema.
+  payload.pop("reasoning_effort",None)
+  payload.pop("response_format",None)
+  tokens=payload.pop("max_completion_tokens",500)
+  payload["max_tokens"]=max(int(tokens),2048) if pid == "gemini" else max(int(tokens),700)
+  if pid in {"mistral","cerebras"}:
+   payload["response_format"]={"type":"json_object"}
  request=urllib.request.Request(
   base_url+"/chat/completions",
   data=json.dumps(payload).encode(),
@@ -350,7 +383,7 @@ def ask_groq_model(model, prompt):
  try:
   content=outer["choices"][0]["message"]["content"]
  except (KeyError,IndexError,TypeError) as exc:
-  raise json.JSONDecodeError("respuesta Groq sin contenido",json.dumps(outer)[:200],0) from exc
+  raise json.JSONDecodeError(f"respuesta {pid} sin contenido",json.dumps(outer)[:200],0) from exc
  return parse_ai_response(content)
 
 def scan_trend_score(item):
@@ -427,13 +460,13 @@ def ask_once(items, role=None):
    result["fallback_from"]=errors
    return result
   if provider == "groq":
-   # Si un modelo agota su cuota (429) o falla, se rota al siguiente: cada modelo de
-   # Groq tiene su propio límite, así que el ciclo no se queda en HOLD por uno solo.
-   primary=os.getenv("GROQ_MODEL","qwen/qwen3.8-27b")
-   fallback_raw=os.getenv("GROQ_FALLBACK_MODELS","openai/gpt-oss-120b,qwen/qwen3.8-27b,llama-3.3-70b-versatile")
-   models=[]
-   for model in [primary,*[x.strip() for x in fallback_raw.split(",") if x.strip()]]:
-    if model not in models: models.append(model)
+   # "groq" = IA remota en formato OpenAI. Si un modelo agota su cuota (429) o
+   # falla, se rota al siguiente y luego al siguiente proveedor gratis guardado
+   # en la app (Groq, Gemini, OpenRouter, Cerebras, Mistral).
+   models=[(p, m) for p in ai_providers() for m in p.get("modelos",[])]
+   if not models:
+    errors.append("IA remota sin clave: agrégala en la app (Config → IA)")
+    continue
   elif provider == "ollama":
    ok, detail=ensure_server(wait_seconds=20)
    if not ok:
@@ -447,12 +480,13 @@ def ask_once(items, role=None):
   else:
    errors.append(f"proveedor desconocido: {provider}")
    continue
-  for model in models:
-   label=f"{provider}/{model}"
+  for entry in models:
+   prov, model = entry if isinstance(entry, tuple) else (None, entry)
+   label=f"{prov.get('id','groq')}/{model}" if prov else f"{provider}/{model}"
    try:
-    raw=ask_groq_model(model,prompt) if provider == "groq" else ask_ollama_model(model,prompt)
+    raw=ask_groq_model(model,prompt,prov) if provider == "groq" else ask_ollama_model(model,prompt)
     result=normalize_ai_result(raw,items)
-    result["provider_used"]=provider
+    result["provider_used"]=prov.get("id","groq") if prov else provider
     result["model_used"]=model
     if errors: result["fallback_from"]=errors
     return result
