@@ -384,6 +384,30 @@ def profit_state(symbol, market, perf, snapshot):
     meta=cost_basis_meta(symbol, perf)
     return {"known":True,"estimated":meta.get("estimated",False),"source":meta.get("source","cost_basis"),"price":price,"avg_cost":avg,"profit_pct":pct,"profit_ok":pct>=min_profit,"stop_loss":pct<=-stop_loss and (symbol or "").upper() not in no_loss_symbols()}
 
+def no_sell_symbols():
+    """Monedas que el usuario acumula a largo plazo (casilla «No vender BTC» en
+    Estrategias): el bot nunca las vende ni las usa como fuente de otra compra.
+    Solo una orden manual del usuario (co_*) o una venta forzada puede venderlas."""
+    return {x.strip().upper() for x in os.getenv("NO_SELL_SYMBOLS","").split(",") if x.strip()}
+
+def manual_user_order(signal):
+    if not isinstance(signal, dict):
+        return False
+    oid=str(signal.get("conditional_order_id") or "")
+    return signal.get("strategy")=="FORCED_LOSS_SELL" or (signal.get("origin")=="conditional_order" and oid.startswith("co_"))
+
+def protected_asset_sold(symbol, signal):
+    """Devuelve la moneda protegida que esta operacion venderia, o None."""
+    if not isinstance(signal, dict) or manual_user_order(signal):
+        return None
+    protegidas=no_sell_symbols()
+    if signal.get("action")=="SELL" and str(symbol or "").upper() in protegidas:
+        return str(symbol).upper()
+    fuente=str(signal.get("source") or "").upper()
+    if signal.get("action")=="BUY" and fuente in protegidas:
+        return fuente
+    return None
+
 def loss_rebuy_block(symbol, market, snapshot, perf=None):
     """Regla del usuario: no comprar mas de una moneda mientras esa posicion va en
     perdida (no promediar a la baja). Sin posicion o sin costo conocido se permite.
@@ -876,6 +900,9 @@ def pick_conditional_order(items, snapshot):
                     continue
             signal={"action":"BUY","confidence":0.91,"strategy":"CONDITIONAL_ORDER","reason":f"orden condicionada {order_id}: precio {price:.8g} <= trigger {trigger:.8g}","source":"USDC","origin":"conditional_order","conditional_order_id":order_id}
             return symbol, signal, amount
+        if symbol.upper() in no_sell_symbols() and not order_id.startswith("co_"):
+            log_event("hodl_block", conditional_order_id=order_id, symbol=symbol, action="SELL", reason=f"{symbol} en acumulacion (No vender): se ignora la venta automatica")
+            continue
         held=snapshot.get("assets",{}).get(symbol,{"amount":0.0,"native_usd":0.0})
         value_usd=float(order.get("value_usd",0) or 0)
         if value_usd <= 0 or held.get("native_usd",0.0) <= 0:
@@ -951,8 +978,9 @@ def pick_signal(opps, items, perf=None, adaptive=None):
     free_usdc=free_usdc_amount()
     low_capital_mode=free_usdc < min_usdc
     sell_candidates=[]
+    protegidas=no_sell_symbols()
     for symbol, market in items.items():
-        if symbol in {"USDC","USDT"}:
+        if symbol in {"USDC","USDT"} or symbol.upper() in protegidas:
             continue
         held=snapshot.get("assets",{}).get(symbol,{"amount":0.0,"native_usd":0.0})
         min_native=float(os.getenv("MIN_SELL_NATIVE_USD", "5"))
@@ -1079,6 +1107,8 @@ def pick_signal(opps, items, perf=None, adaptive=None):
         if usdc_amount < min_usdc:
             log_event("trade_size_block", symbol=symbol, action="BUY", amount_usdc=round(usdc_amount,4), min_usdc=min_usdc, max_usdc=max_usdc, free_usdc=round(free_usdc,4),
                       reason=f"monto {usdc_amount:.2f} USDC menor al minimo {min_usdc:.2f} (tope por operacion {max_usdc:.2f}, libre {free_usdc:.2f})")
+        if symbol != "BTC" and "BTC" in protegidas:
+            continue
         if symbol != "BTC":
             rot_ok, rot_reason=btc_rotation_allowed(snapshot)
             if not rot_ok:
@@ -1323,6 +1353,13 @@ def main():
     if not symbol or signal.get('action')=='HOLD':
         print(f"AUTO: HOLD · {signal.get('reason','sin oportunidad')}")
         log_event("decision_hold", signal=signal)
+        return
+    protegida=protected_asset_sold(symbol, signal)
+    if protegida:
+        reason=f"{protegida} en acumulacion (No vender {protegida}): operacion cancelada"
+        print(f"AUTO: HOLD · {reason}")
+        log_event("hodl_block", symbol=symbol, action=signal.get("action"), source=signal.get("source"), strategy=signal.get("strategy"), reason=reason)
+        log_event("decision_hold", signal={"action":"HOLD","confidence":0.0,"strategy":"HODL","reason":reason,"source":"USDC"})
         return
     gate=validate(signal,items.get(symbol,{}),amount,float(os.getenv('DAILY_LOSS_USDC','0')))
     print("AUTO [90%] risk gate validado")
