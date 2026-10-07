@@ -21,6 +21,7 @@ SECRET_KEYS = {
     "CRYPTO_COM_API_KEY",
     "CRYPTO_COM_API_SECRET",
     "GROQ_API_KEY",
+    "IA_PROVIDERS_SECRET_JSON",
     "RUNNER_TOKEN",
     "CLOUDFLARE_RUNNER_TOKEN",
 }
@@ -161,6 +162,9 @@ def apply_runtime_env(next_job):
     groq = str(config.get("GROQ_API_KEY") or "").strip()
     if groq:
         os.environ["GROQ_API_KEY"] = groq
+    proveedores = str(config.get("IA_PROVIDERS_SECRET_JSON") or "").strip()
+    if proveedores:
+        os.environ["IA_PROVIDERS_SECRET_JSON"] = proveedores
 
 
 def _write_json_atomic(path: Path, data) -> None:
