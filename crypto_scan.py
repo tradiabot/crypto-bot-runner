@@ -433,7 +433,7 @@ def ask_once(items, role=None):
    prompt=(
     f"Analyze only {sym}. Return ONLY a valid JSON object containing an opportunities array; each item has symbol, action, confidence, reason. "
     f"Use symbol {sym}; action must be BUY, SELL, or HOLD; confidence must be a number from 0 to 1; reason must be short. No markdown. "
-    "Use only p, d24 and w1 from Market; never use news, companies, shares, CEOs or insider transactions. "
+    "Use p, d24 and w1 from Market plus the Context below; never invent news, companies, shares, CEOs or insider transactions. "
     "Market="+rows
    )
  else:
@@ -444,10 +444,19 @@ def ask_once(items, role=None):
    prompt=(
     "Analyze the listed assets. Return ONLY a valid JSON object with an opportunities array of objects with keys symbol, action, confidence, reason. "
     "Use listed symbols only; action must be BUY, SELL, or HOLD; confidence must be a number from 0 to 1. No markdown. "
-    "Use only p, d24 and w1 from Market; never use news, companies, shares, CEOs or insider transactions. "
+    "Use p, d24 and w1 from Market plus the Context below; never invent news, companies, shares, CEOs or insider transactions. "
     "Do not repeat the same exact opportunities unless conditions changed materially. "
     "Market="+rows
    )
+ # Mercado global y noticias de las ultimas 24 h (mercado_contexto.py).
+ if os.getenv("MARKET_CONTEXT","YES").upper() != "NO":
+  try:
+   from mercado_contexto import texto_para_ia
+   ctx=texto_para_ia()
+   if ctx:
+    prompt += "\n" + ctx
+  except Exception as exc:
+   print(f"[IA] contexto de mercado no disponible: {exc}", file=sys.stderr, flush=True)
  errors=[]
  primary_provider=os.getenv("AI_PROVIDER", "ollama").strip().lower()
  fallback_providers=[x.strip().lower() for x in os.getenv("AI_FALLBACK_PROVIDERS", "ollama,technical").split(",") if x.strip()]
