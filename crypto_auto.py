@@ -1098,6 +1098,13 @@ def pick_signal(opps, items, perf=None, adaptive=None):
             continue
         usdc_amount=min(max_usdc, free_usdc)
         min_conf=float(adaptive.get("min_confidence", 0.60) or 0.60)
+        # Con turbulencia o aversion al riesgo (mercado global) se exige mas
+        # confianza para comprar, como en Kumo beta.
+        extra=env_float("TURBULENCE_EXTRA_CONFIDENCE","0.05") if os.getenv("MARKET_TURBULENCE","NO")=="YES" else 0.0
+        if extra and min_conf <= signal["confidence"] < min_conf+extra:
+            log_event("turbulence_buy_block", symbol=symbol, action="BUY", confidence=signal["confidence"], required=round(min_conf+extra,3),
+                      reason=f"mercado turbulento/aversion al riesgo: se exige confianza {min_conf+extra:.2f}", market=os.getenv("MARKET_CONTEXT_SUMMARY",""))
+            continue
         if signal["confidence"] < min_conf:
             log_event("adaptive_confidence_block", symbol=symbol, action="BUY", confidence=signal["confidence"], required=min_conf, adaptive=adaptive)
             continue
@@ -1254,6 +1261,15 @@ def main():
         return
     print_ai_response(report)
     log_event("ai_response", ai=report.get('ai',{}), universe=report.get('universe',[]))
+    try:
+        from mercado_contexto import contexto as mercado_contexto
+        ctx=mercado_contexto()
+        g=ctx.get("global") or {}
+        log_event("mercado_contexto", mercado=g, noticias=(ctx.get("noticias") or [])[:12], ts_contexto=ctx.get("ts"))
+        os.environ["MARKET_TURBULENCE"]="YES" if (g.get("turbulencia") or g.get("tono")=="aversión al riesgo") else "NO"
+        os.environ["MARKET_CONTEXT_SUMMARY"]=str(g.get("resumen") or "")[:300]
+    except Exception as exc:
+        print(f"AUTO: contexto de mercado no disponible ({exc})")
     ai_data=report.get('ai',{}) if isinstance(report.get('ai'),dict) else {}
     items={x.get('symbol'):x for x in report.get('universe',[]) if x.get('symbol')}
     opps=report.get('ai',{}).get('opportunities',[])
