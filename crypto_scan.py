@@ -363,7 +363,7 @@ def ask_groq_model(model, prompt, provider=None):
   payload.pop("reasoning_effort",None)
   payload.pop("response_format",None)
   tokens=payload.pop("max_completion_tokens",500)
-  payload["max_tokens"]=max(int(tokens),2048) if pid == "gemini" else max(int(tokens),700)
+  payload["max_tokens"]=max(int(tokens),2048) if pid == "gemini" else max(int(tokens),1500) if provider.get("sin_clave") else max(int(tokens),700)
   if pid in {"mistral","cerebras"}:
    payload["response_format"]={"type":"json_object"}
  headers={
