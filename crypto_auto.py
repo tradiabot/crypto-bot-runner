@@ -408,6 +408,35 @@ def protected_asset_sold(symbol, signal):
         return fuente
     return None
 
+def loss_sell_reason(symbol, signal, items):
+    """Candado final (regla del usuario): ninguna venta automatica con P/L
+    negativo o costo desconocido, sin importar stops, rebalanceos ni ajustes.
+    Incluye la rotacion (comprar algo pagando con otra cripto = venderla).
+    Solo las ordenes manuales del usuario (co_) o una venta forzada pasan.
+    Devuelve (motivo o None, profit_state, moneda vendida)."""
+    if os.getenv("NEVER_SELL_AT_LOSS","YES").upper()!="YES" or not isinstance(signal, dict) or manual_user_order(signal):
+        return None, None, None
+    vendida=None
+    if signal.get("action")=="SELL":
+        vendida=str(symbol or "").upper()
+    elif signal.get("action")=="BUY" and str(signal.get("source") or "USDC").upper() not in {"USDC","USDT","USD"}:
+        vendida=str(signal.get("source")).upper()
+    if not vendida:
+        return None, None, None
+    try:
+        ps=signal.get("profit_state") if vendida==str(symbol or "").upper() and isinstance(signal.get("profit_state"),dict) and signal["profit_state"].get("known") is not None else None
+        if not ps:
+            ps=profit_state(vendida, items.get(vendida,{}), decision_context(), portfolio_snapshot(items))
+    except Exception as exc:
+        ps={"known":False,"error":str(exc)[:120]}
+    piso=env_float("MIN_SELL_PROFIT_FLOOR_PCT","0.005")
+    pct=float(ps.get("profit_pct",0.0) or 0.0)
+    if not ps.get("known"):
+        return f"{vendida}: venta bloqueada, costo promedio desconocido: no se vende sin confirmar ganancia", ps, vendida
+    if pct < piso:
+        return f"{vendida}: venta bloqueada, P/L {pct*100:.2f}% (minimo +{piso*100:.1f}%): nunca se vende con perdida", ps, vendida
+    return None, ps, vendida
+
 def loss_rebuy_block(symbol, market, snapshot, perf=None):
     """Regla del usuario: no comprar mas de una moneda mientras esa posicion va en
     perdida (no promediar a la baja). Sin posicion o sin costo conocido se permite.
@@ -1378,6 +1407,12 @@ def main():
     if not symbol or signal.get('action')=='HOLD':
         print(f"AUTO: HOLD · {signal.get('reason','sin oportunidad')}")
         log_event("decision_hold", signal=signal)
+        return
+    motivo_perdida, ps_perdida, vendida = loss_sell_reason(symbol, signal, items)
+    if motivo_perdida:
+        print(f"AUTO: HOLD · {motivo_perdida}")
+        log_event("loss_sell_block", symbol=vendida, action=signal.get("action"), strategy=signal.get("strategy"), profit_state=ps_perdida, reason=motivo_perdida)
+        log_event("decision_hold", signal={"action":"HOLD","confidence":0.0,"strategy":"NEVER_SELL_AT_LOSS","reason":motivo_perdida,"source":"USDC"})
         return
     protegida=protected_asset_sold(symbol, signal)
     if protegida:
