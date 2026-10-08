@@ -292,7 +292,7 @@ def ai_providers():
  if raw:
   try:
    lista=json.loads(raw)
-   lista=[p for p in lista if isinstance(p,dict) and p.get("key") and p.get("base_url") and p.get("modelos")]
+   lista=[p for p in lista if isinstance(p,dict) and (p.get("key") or p.get("sin_clave")) and p.get("base_url") and p.get("modelos")]
    if lista:
     return lista
   except (json.JSONDecodeError, TypeError):
@@ -310,8 +310,9 @@ def ai_providers():
 def ask_groq_model(model, prompt, provider=None):
  provider=provider or {}
  pid=str(provider.get("id") or "groq")
- api_key=str(provider.get("key") or os.getenv("GROQ_API_KEY", "")).strip()
- if not api_key:
+ sin_clave=bool(provider.get("sin_clave"))
+ api_key="" if sin_clave else str(provider.get("key") or os.getenv("GROQ_API_KEY", "")).strip()
+ if not api_key and not sin_clave:
   raise RuntimeError(f"clave de {pid} no configurada")
  base_url=str(provider.get("base_url") or os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")).rstrip("/")
  payload={
@@ -365,17 +366,19 @@ def ask_groq_model(model, prompt, provider=None):
   payload["max_tokens"]=max(int(tokens),2048) if pid == "gemini" else max(int(tokens),700)
   if pid in {"mistral","cerebras"}:
    payload["response_format"]={"type":"json_object"}
+ headers={
+  "Content-Type":"application/json",
+  "Accept":"application/json",
+  # Groq's Cloudflare edge rejects Python urllib's default user-agent with
+  # error 1010 on this Android/Termux network.
+  "User-Agent":os.getenv("GROQ_USER_AGENT","curl/8.14.1"),
+ }
+ if api_key:
+  headers["Authorization"]="Bearer "+api_key
  request=urllib.request.Request(
   base_url+"/chat/completions",
   data=json.dumps(payload).encode(),
-  headers={
-   "Authorization":"Bearer "+api_key,
-   "Content-Type":"application/json",
-   "Accept":"application/json",
-   # Groq's Cloudflare edge rejects Python urllib's default user-agent with
-   # error 1010 on this Android/Termux network.
-   "User-Agent":os.getenv("GROQ_USER_AGENT","curl/8.14.1"),
-  },
+  headers=headers,
  )
  timeout=max(5,int(os.getenv("GROQ_TIMEOUT_SECONDS", "30")))
  with urllib.request.urlopen(request,timeout=timeout) as response:
