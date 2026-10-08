@@ -492,6 +492,17 @@ def ask_once(items, role=None):
   else:
    errors.append(f"proveedor desconocido: {provider}")
    continue
+  # Consenso entre IAs: varias votan a la vez (IA_CONSENSUS_SIZE, lo manda la app).
+  try:
+   size=int(os.getenv("IA_CONSENSUS_SIZE","1") or 1)
+  except ValueError:
+   size=1
+  if provider == "groq" and size >= 2 and len(models) >= 2:
+   result, intentados=consensus_ai(models, prompt, items, min(size, 5), errors)
+   if result:
+    if errors: result["fallback_from"]=errors
+    return result
+   models=[m for m in models if m not in intentados]
   for entry in models:
    prov, model = entry if isinstance(entry, tuple) else (None, entry)
    label=f"{prov.get('id','groq')}/{model}" if prov else f"{provider}/{model}"
@@ -514,6 +525,97 @@ def ask_once(items, role=None):
     errors.append(f"{label}: {exc}")
    print(f"[IA] {label} falló; probando fallback",file=sys.stderr,flush=True)
  raise RuntimeError("; ".join(errors) or "La IA devolvio JSON invalido")
+def _ai_error_text(exc):
+ if isinstance(exc, urllib.error.HTTPError):
+  return "cuota temporal agotada (HTTP 429)" if exc.code == 429 else f"HTTP {exc.code}"
+ if isinstance(exc, urllib.error.URLError):
+  return f"no respondió: {exc.reason}"
+ if isinstance(exc, (TimeoutError, OSError)):
+  return "timeout"
+ return str(exc)[:160]
+
+def confidence_value(value, default=0.0):
+ if isinstance(value, str):
+  mapped={"low":0.35,"medium":0.60,"med":0.60,"high":0.80,"alta":0.80,"media":0.60,"baja":0.35}
+  if value.strip().lower() in mapped:
+   return mapped[value.strip().lower()]
+ try:
+  v=float(value if value is not None else default)
+ except (TypeError, ValueError):
+  return float(default)
+ return v/100.0 if v > 1 else v
+
+def combine_votes(votes, items):
+ """Junta los votos de varias IAs (como DEX Pilot):
+ - accion = la de mayor confianza sumada (empate -> HOLD);
+ - confianza = media de quienes votaron esa accion x (0.5 + 0.5 x acuerdo):
+   3/3 la conserva y 2/3 la recorta un 17 %."""
+ symbols=[x.get("symbol") for x in items if x.get("symbol")]
+ out=[]
+ for sym in symbols:
+  ops=[]
+  for v in votes:
+   op=next((o for o in v["res"].get("opportunities",[]) if isinstance(o,dict) and o.get("symbol")==sym), None)
+   if op:
+    a=str(op.get("action","HOLD")).upper()
+    ops.append({"label":v["label"],"action":a if a in {"BUY","SELL","HOLD"} else "HOLD","confidence":confidence_value(op.get("confidence"),0.0),"reason":str(op.get("reason") or "")})
+  if not ops:
+   continue
+  score={"BUY":0.0,"SELL":0.0,"HOLD":0.0}
+  for o in ops:
+   score[o["action"]]+=max(0.01,o["confidence"])
+  ranked=sorted(score, key=lambda k: -score[k])
+  action="HOLD" if score[ranked[0]] == score[ranked[1]] else ranked[0]
+  voters=[o for o in ops if o["action"] == action]
+  agreement=len(voters)/len(ops)
+  base=(sum(o["confidence"] for o in voters)/len(voters)) if voters else min(o["confidence"] for o in ops)
+  lead=sorted(voters or ops, key=lambda o: -o["confidence"])[0]
+  tally=", ".join(f"{o['label'].split('/')[-1]} {o['action']} {round(o['confidence']*100)}" for o in ops)
+  out.append({"symbol":sym,"action":action,"confidence":round(base*(0.5+0.5*agreement),3),
+              "reason":f"Consenso {len(voters)}/{len(ops)} ({tally}): {lead['reason']}"[:220]})
+ return out
+
+def consensus_ai(models, prompt, items, size, errors):
+ """Consulta a la vez a `size` IAs (un modelo por proveedor primero) y combina
+ sus votos. Si responde menos de la mitad, completa con las siguientes una a una.
+ Devuelve (resultado o None, pares ya intentados)."""
+ primeros, resto, vistos = [], [], set()
+ for prov, m in models:
+  pid=prov.get("id","groq")
+  (resto if pid in vistos else primeros).append((prov, m)); vistos.add(pid)
+ pool=primeros+resto
+ first=pool[:size]
+ def votar(pair):
+  prov, m = pair
+  label=f"{prov.get('id','groq')}/{m}"
+  try:
+   return {"ok":True,"label":label,"prov":prov.get("id","groq"),"model":m,"res":normalize_ai_result(ask_groq_model(m,prompt,prov),items)}
+  except Exception as exc:
+   return {"ok":False,"label":label,"error":_ai_error_text(exc)}
+ with concurrent.futures.ThreadPoolExecutor(max_workers=len(first)) as ex:
+  votes=list(ex.map(votar, first))
+ for pair in pool[len(first):]:
+  if sum(1 for v in votes if v["ok"])*2 >= len(first):
+   break
+  votes.append(votar(pair))
+ intentados=[(next(p for p,m in pool if f"{p.get('id','groq')}/{m}"==v["label"]), v["label"].split("/",1)[1]) for v in votes]
+ for v in votes:
+  if not v["ok"]:
+   errors.append(f"{v['label']}: {v['error']}")
+   print(f"[IA] voto de {v['label']} falló: {v['error']}", file=sys.stderr, flush=True)
+ ok=[v for v in votes if v["ok"]]
+ if not ok:
+  return None, intentados
+ if len(ok) == 1:
+  r=ok[0]["res"]; r["provider_used"]=ok[0]["prov"]; r["model_used"]=ok[0]["model"]
+  r["consenso"]={"votos":1,"pedidos":len(first),"modelos":[ok[0]["label"]]}
+  return r, intentados
+ r={"opportunities":combine_votes(ok, items)}
+ r["provider_used"]=ok[0]["prov"]
+ r["model_used"]="consenso:"+"+".join(v["label"] for v in ok)
+ r["consenso"]={"votos":len(ok),"pedidos":len(first),"modelos":[v["label"] for v in ok]}
+ return r, intentados
+
 def technical_fallback(item, reason="fallback tecnico"):
  try:
   d24=float(item.get("change_24h",0) or 0); w1=float(item.get("change_1w",0) or 0)
