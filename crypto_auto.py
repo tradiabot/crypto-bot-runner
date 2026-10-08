@@ -1264,13 +1264,22 @@ def main():
     requested_provider=os.getenv("AI_PROVIDER", "groq").strip().lower()
     provider_used=str(ai_data.get("provider_used", "")).strip().lower()
     model_used=str(ai_data.get("model_used", "")).strip().lower()
-    remote_ai_ok=provider_used == requested_provider and model_used not in {"", "technical"}
+    # "groq" significa IA remota en formato OpenAI: cualquiera de los proveedores
+    # que la app configuro (Gemini, Mistral, Kilo...) es valido, no solo Groq.
+    remote_ids={requested_provider}
+    if requested_provider == "groq":
+        try:
+            from crypto_scan import ai_providers
+            remote_ids |= {str(p.get("id","")).lower() for p in ai_providers()}
+        except Exception:
+            pass
+    remote_ai_ok=provider_used in remote_ids and provider_used not in {"technical","ollama",""} and model_used not in {"", "technical"}
     if require_ai and (ai_error or ai_partial_error or not remote_ai_ok):
         if ai_error:
             block_reason=f"IA reporto error: {ai_data.get('error')}"
         elif ai_partial_error:
             block_reason="IA con errores parciales; ejecucion bloqueada por REQUIRE_AI_FOR_EXECUTION=YES"
-        elif provider_used != requested_provider:
+        elif provider_used not in remote_ids:
             block_reason=f"Proveedor IA invalido: recibido '{provider_used or 'vacio'}', requerido '{requested_provider}'"
         else:
             block_reason=f"Modelo IA invalido o ausente: recibido '{model_used or 'vacio'}'"
