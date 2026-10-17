@@ -390,6 +390,22 @@ def no_sell_symbols():
     Solo una orden manual del usuario (co_*) o una venta forzada puede venderlas."""
     return {x.strip().upper() for x in os.getenv("NO_SELL_SYMBOLS","").split(",") if x.strip()}
 
+def accumulate_usdc():
+    """Casilla «Conservar USDC» (Config): el bot no gasta USDC. Solo rota entre
+    activos pagando con otra cripto que va en ganancia; lo que vende con ganancia
+    queda en USDC y se acumula. Tus ordenes manuales (co_*) si pueden usar USDC."""
+    return os.getenv("ACCUMULATE_USDC","NO").strip().upper() in {"YES","1","TRUE","ON"}
+
+def usdc_spend_reason(signal):
+    """Motivo para frenar una compra automatica pagada con USDC en modo Conservar USDC, o None."""
+    if not accumulate_usdc() or not isinstance(signal, dict) or manual_user_order(signal):
+        return None
+    if signal.get("action")!="BUY":
+        return None
+    if str(signal.get("source") or "USDC").upper() in {"USDC","USDT","USD"}:
+        return "Conservar USDC activo: el bot no gasta USDC; solo rota entre activos que van en ganancia"
+    return None
+
 def manual_user_order(signal):
     if not isinstance(signal, dict):
         return False
@@ -451,6 +467,42 @@ def loss_rebuy_block(symbol, market, snapshot, perf=None):
     if pstate.get("known") and pct < 0:
         return True, f"{symbol} compra bloqueada: tu posicion va en {pct*100:.2f}% (P/L negativo); no se promedia a la baja"
     return False, ""
+
+def rotation_source(target, snapshot, items, max_usd):
+    """Con que cripto pagar una compra sin tocar USDC (rotacion entre activos).
+    Solo usa monedas con costo conocido y en ganancia sobre ROTATION_MIN_PROFIT_PCT
+    (cubre el spread de la conversion), nunca las de «No vender» ni la moneda que se
+    compra. Elige la de mayor ganancia. Devuelve (moneda, cantidad, profit_state) o
+    (None, 0.0, None)."""
+    protegidas=no_sell_symbols()
+    piso=max(env_float("ROTATION_MIN_PROFIT_PCT","0.015"), env_float("MIN_SELL_PROFIT_FLOOR_PCT","0.005"))
+    minimo=env_float("MIN_ROTATION_NATIVE_USD","5")
+    if max_usd < minimo:
+        return None, 0.0, None
+    mejor=None
+    for sym, held in (snapshot.get("assets") or {}).items():
+        s=str(sym).upper()
+        if s in {"USDC","USDT","USD",str(target).upper()} or s in protegidas:
+            continue
+        valor=float(held.get("native_usd",0.0) or 0.0)
+        cant=float(held.get("amount",0.0) or 0.0)
+        if valor < minimo or cant <= 0:
+            continue
+        try:
+            ps=profit_state(s, items.get(s,{}), decision_context(), snapshot)
+        except Exception:
+            continue
+        pct=float(ps.get("profit_pct",0.0) or 0.0)
+        if not ps.get("known") or pct < piso:
+            continue
+        if mejor is None or pct > mejor[2]["profit_pct"]:
+            mejor=(s, held, ps)
+    if not mejor:
+        return None, 0.0, None
+    s, held, ps=mejor
+    precio=float(held["native_usd"])/float(held["amount"])
+    usd=min(float(held["native_usd"]), max_usd)
+    return s, usd/precio, ps
 
 def buy_allowed(symbol, snapshot):
     asset=snapshot.get("assets",{}).get(symbol,{})
@@ -914,6 +966,9 @@ def pick_conditional_order(items, snapshot):
             amount=float(order.get("amount_usdc",0) or 0)
             if amount <= 0:
                 continue
+            if accumulate_usdc() and not order_id.startswith("co_"):
+                log_event("conditional_order_block", conditional_order_id=order_id, symbol=symbol, side=side, reason="Conservar USDC: las ordenes automaticas no gastan USDC")
+                continue
             free=free_usdc_amount()
             if amount > free:
                 log_event("conditional_order_block", conditional_order_id=order_id, symbol=symbol, side=side, reason=f"USDC libre insuficiente {free:.2f} < orden {amount:.2f}")
@@ -1137,6 +1192,18 @@ def pick_signal(opps, items, perf=None, adaptive=None):
         if signal["confidence"] < min_conf:
             log_event("adaptive_confidence_block", symbol=symbol, action="BUY", confidence=signal["confidence"], required=min_conf, adaptive=adaptive)
             continue
+        if accumulate_usdc():
+            # Conservar USDC: se paga con otra cripto que vaya en ganancia, nunca con USDC.
+            if signal["confidence"] < max(0.68, min_conf):
+                continue
+            fuente, cant, ps_fuente=rotation_source(symbol, snapshot, items, max_usdc)
+            if not fuente:
+                log_event("usdc_accumulate_hold", symbol=symbol, action="BUY",
+                          reason="Conservar USDC: ninguna otra cripto va en ganancia suficiente para pagar la compra; no se usa USDC")
+                continue
+            signal["source"]=fuente
+            signal["reason"] += f"; rotacion desde {fuente} (+{ps_fuente['profit_pct']*100:.1f}%) sin gastar USDC"
+            return symbol, signal, cant
         if signal["confidence"] >= min_conf and usdc_amount >= min_usdc:
             signal["source"]="USDC"
             return symbol, signal, usdc_amount
@@ -1413,6 +1480,12 @@ def main():
         print(f"AUTO: HOLD · {motivo_perdida}")
         log_event("loss_sell_block", symbol=vendida, action=signal.get("action"), strategy=signal.get("strategy"), profit_state=ps_perdida, reason=motivo_perdida)
         log_event("decision_hold", signal={"action":"HOLD","confidence":0.0,"strategy":"NEVER_SELL_AT_LOSS","reason":motivo_perdida,"source":"USDC"})
+        return
+    gasto_usdc=usdc_spend_reason(signal)
+    if gasto_usdc:
+        print(f"AUTO: HOLD · {gasto_usdc}")
+        log_event("usdc_accumulate_block", symbol=symbol, action=signal.get("action"), source=signal.get("source"), strategy=signal.get("strategy"), reason=gasto_usdc)
+        log_event("decision_hold", signal={"action":"HOLD","confidence":0.0,"strategy":"CONSERVAR_USDC","reason":gasto_usdc,"source":"USDC"})
         return
     protegida=protected_asset_sold(symbol, signal)
     if protegida:
